@@ -4,6 +4,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Vendored, unmodified third-party source (see app/vendor/agora_token2) — not ours to lint.
+extend-exclude = ["app/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
