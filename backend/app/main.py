@@ -5,8 +5,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agora import router as agora_router
+from app.agora_events import router as agora_events_router
 from app.config import get_settings
 from app.db import check_db_connection, init_db
+from app.incident_db import init_incident_schema
+from app.incidents_api import router as incidents_router
 from app.schemas import HealthResponse
 
 settings = get_settings()
@@ -15,6 +18,7 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
+    init_incident_schema()
     yield
 
 
@@ -29,6 +33,8 @@ app.add_middleware(
 )
 
 app.include_router(agora_router)
+app.include_router(agora_events_router)
+app.include_router(incidents_router)
 
 
 @app.get("/health", response_model=HealthResponse)

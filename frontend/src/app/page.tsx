@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import IncidentPanel from "@/components/IncidentPanel";
 import { type AgentStatus, useAgoraRoom } from "@/lib/useAgoraRoom";
 
 const CONNECTION_LABEL: Record<string, string> = {
@@ -159,6 +160,8 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      <IncidentPanel />
     </main>
   );
 }

@@ -18,6 +18,29 @@ echoward/
 └── CLAUDE.md    Architecture, decisions, status
 ```
 
+## Architecture
+
+```
+Browser (Next.js)                     FastAPI backend                   External services
+──────────────────                    ────────────────                  ─────────────────
+Agora RTC Web SDK  ── token/agent ──▶  app/agora.py            ──────▶  Agora RTC + Conversational
+  (voice room)     ◀── audio ───────   app/agora_events.py     ◀──────  AI Engine (managed LLM/
+                                         (transcript webhook,             ASR/TTS)
+                                          unverified — see below)
+
+IncidentPanel      ── conversation ─▶  app/incidents_api.py
+  (dev bridge)     ◀── state ────────   app/intelligence.py    ──────▶  Gemini (structured
+                                         app/incident_db.py               extraction only)
+                                         (SQLite)
+```
+
+The voice loop (Phase 2) and incident intelligence (M2) are two independent backend concerns that
+happen to share one FastAPI app and one SQLite file. A conversation turn can reach the
+intelligence pipeline either directly (`POST /api/incidents/{id}/conversation`, what the
+`IncidentPanel` dev bridge and the tests use) or — once wired up in a real Agora project — via the
+`POST /api/agora/webhook/{incident_id}` adapter. See CLAUDE.md's "Incident intelligence (M2)"
+section for the full design and its known gaps.
+
 ## Prerequisites
 
 - Node.js 20+ and npm
@@ -25,6 +48,9 @@ echoward/
 - An [Agora](https://console.agora.io) account (free) with a project that has **RTC** and
   **Conversational AI** enabled — required only to actually run the voice room; the app runs and
   its tests pass without one.
+- A [Gemini API key](https://aistudio.google.com/apikey) (free tier) — required only to actually
+  run incident-intelligence extraction; the app runs and its tests pass without one (the
+  conversation endpoint returns a clear `503` instead).
 
 ## Backend setup (FastAPI)
 
@@ -93,6 +119,46 @@ npm run build
 6. The frontend needs no separate Agora env var — it gets `app_id` back from the backend's token
    endpoint. Its `.env.local` only needs `NEXT_PUBLIC_API_URL`.
 
+## Configuring incident intelligence (Gemini)
+
+1. Get a free API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+2. Put it in `backend/.env` as `GEMINI_API_KEY`. `GEMINI_MODEL` defaults to `gemini-flash-latest`
+   and normally doesn't need changing.
+3. This is separate from the Agora voice agent's LLM (which is Agora-managed, see above) — it's
+   used only by `POST /api/incidents/{id}/conversation` to extract structured facts/hypotheses/
+   decisions/actions/etc. from one statement at a time.
+
+## Exercising incident intelligence without Agora
+
+The intelligence layer is fully decoupled from the voice room — you can test it with `curl` alone,
+no browser/microphone/Agora account needed:
+
+```bash
+# 1. Create an incident
+curl -s -X POST http://localhost:8000/api/incidents \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Payments outage"}'
+# => {"id": "…", "title": "Payments outage", "status": "investigating", ...}
+
+# 2. Feed it a conversation turn (requires GEMINI_API_KEY to be set)
+curl -s -X POST http://localhost:8000/api/incidents/<incident_id>/conversation \
+  -H "Content-Type: application/json" \
+  -d '{"speaker": "Alice", "text": "Payments are failing for about 30% of users."}'
+# => {"changes": {"facts": [...], ...}, "state": {...full incident state...}}
+
+# 3. Read the current structured state at any time
+curl -s http://localhost:8000/api/incidents/<incident_id>/state
+```
+
+Or use the **Incident Intelligence** panel at the bottom of http://localhost:3000 — it does the
+same three calls with a small form instead of curl, and shows fact/hypothesis/decision/action/
+conflict/timeline counts plus recent entries. It's a development bridge for this milestone, not
+the final dashboard (that's M3).
+
+Automated tests (`pytest`) exercise the full pipeline — including the exact 5-turn scenario from
+the M2 spec (fact → hypothesis → conflict → decision → action-with-owner) — with the LLM call
+mocked, so `pytest` needs no `GEMINI_API_KEY` either.
+
 ## Starting a voice room
 
 1. Run the backend and frontend (see above), both with real `.env` values configured.
@@ -130,19 +196,33 @@ a microphone. Manual verification procedure:
 
 ## Known limitations
 
-- The Agora integration is implemented against Agora's documented API shapes but has not been
-  exercised against a real Agora account in this environment — see CLAUDE.md's "Known
-  limitations" under Agora integration for specifics (managed-preset availability can vary by
-  account, no agent-state persistence across backend restarts, etc.).
-- No incident intelligence yet: EchoWard responds conversationally but does not extract or track
-  facts/hypotheses/decisions from the conversation. That's the next milestone.
-- No dashboard, no persistent incident record, no Slack/Jira/PagerDuty integration, no
-  authentication — all intentionally out of scope for this phase.
+- The Agora voice integration is implemented against Agora's documented API shapes but has not
+  been exercised against a real Agora account in this environment (managed-preset availability
+  can vary by account, no agent-state persistence across backend restarts, etc.) — see CLAUDE.md.
+- The Gemini extraction call was verified reachable (a deliberately invalid key reached Google's
+  server and failed only on auth, confirming the model id/request/schema are structurally
+  correct) but never verified to produce a correct extraction, since no real `GEMINI_API_KEY` was
+  available in this environment.
+- The Agora → intelligence webhook adapter (`POST /api/agora/webhook/{incident_id}`) is
+  best-effort: built from Agora's documented webhook payload shape, but never exercised against a
+  real webhook delivery. It also can't attribute individual human speakers by name — Agora's
+  documented transcript payload only distinguishes `role: "user"` vs `"assistant"`, so every human
+  turn is currently logged under the generic speaker `"Participant"`. The tested, working path for
+  now is the explicit `POST /api/incidents/{id}/conversation` endpoint (see above).
+- Fact/hypothesis/conflict classification is a prompting discipline enforced by the extraction
+  system prompt, not by independent verification code — it's only as reliable as the LLM's
+  adherence to those instructions.
+- No incident dashboard yet (`IncidentPanel` is a dev bridge, not the real UI), no persistent
+  incident record beyond SQLite, no Slack/Jira/PagerDuty integration, no authentication, no human
+  approval workflow, no spoken incident summaries — all intentionally out of scope until later
+  milestones.
 - Frontend has no automated test runner yet (lint + `tsc --noEmit` + `next build` only).
 
 ## Status
 
-Phase 1 (foundation) and Phase 2 (Agora voice MVP) complete: runnable Next.js frontend + FastAPI
-backend with SQLite wiring, health check, and a working Agora RTC + Conversational AI voice room
-(pending live-account verification — see above). Incident intelligence is not yet implemented —
-see CLAUDE.md for the current milestone.
+Phase 1 (foundation), Phase 2 (Agora voice MVP), and Phase 3/M2 (incident intelligence) are
+complete: runnable Next.js frontend + FastAPI backend with SQLite wiring, health check, a working
+Agora RTC + Conversational AI voice room, and a Gemini-backed pipeline that turns conversation
+turns into structured facts/hypotheses/decisions/actions/timeline/conflicts — all pending
+live-account verification for the two external integrations (Agora, Gemini) as detailed above.
+Next milestone is M3: a live/realtime incident dashboard. See CLAUDE.md for full details.

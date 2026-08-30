@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     database_path: str = "data/echoward.db"
 
+    # Used by the incident-intelligence extraction service (app/llm.py), NOT by the
+    # Agora voice agent (which uses Agora-managed LLM credentials, see below).
     gemini_api_key: str = ""
+    gemini_model: str = "gemini-flash-latest"
 
     # Agora App ID/Certificate: from the Agora Console project (console.agora.io).
     # The certificate must never be sent to the browser.
@@ -57,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def agora_convo_ai_configured(self) -> bool:
         return self.agora_configured and bool(self.agora_customer_id and self.agora_customer_secret)
+
+    @property
+    def gemini_configured(self) -> bool:
+        return bool(self.gemini_api_key)
 
     @property
     def database_full_path(self) -> Path:
