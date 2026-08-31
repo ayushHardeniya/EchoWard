@@ -1,9 +1,18 @@
 import { API_URL } from "./api";
 
+export type IncidentStatus = "investigating" | "identified" | "mitigating" | "resolved";
+
+export const INCIDENT_STATUSES: IncidentStatus[] = [
+  "investigating",
+  "identified",
+  "mitigating",
+  "resolved",
+];
+
 export interface Incident {
   id: string;
   title: string;
-  status: string;
+  status: IncidentStatus;
   created_at: string;
   updated_at: string;
 }
@@ -106,9 +115,9 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json();
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function sendJson<T>(method: "POST" | "PATCH", path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -116,12 +125,24 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  return sendJson<T>("POST", path, body);
+}
+
 export function createIncident(title: string): Promise<Incident> {
   return postJson<Incident>("/api/incidents", { title });
 }
 
+export function getIncident(incidentId: string): Promise<Incident> {
+  return getJson<Incident>(`/api/incidents/${incidentId}`);
+}
+
 export function getIncidentState(incidentId: string): Promise<IncidentState> {
   return getJson<IncidentState>(`/api/incidents/${incidentId}/state`);
+}
+
+export function updateIncidentStatus(incidentId: string, status: IncidentStatus): Promise<IncidentState> {
+  return sendJson<IncidentState>("PATCH", `/api/incidents/${incidentId}/status`, { status });
 }
 
 export function sendConversationTurn(

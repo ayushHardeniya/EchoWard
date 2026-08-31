@@ -139,6 +139,18 @@ def touch_incident(conn: sqlite3.Connection, incident_id: str, when: datetime) -
     conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?", (_iso(when), incident_id))
 
 
+def update_incident_status(incident_id: str, status: IncidentStatus, when: datetime | None = None) -> Incident | None:
+    """Set incident.status directly - the only sanctioned mutation of it (see IncidentStatus in
+    incident_models.py: investigating/identified/mitigating/resolved, no ad hoc states)."""
+    when = when or _now()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE incidents SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, _iso(when), incident_id),
+        )
+    return get_incident(incident_id)
+
+
 def _row_to_incident(row: sqlite3.Row) -> Incident:
     return Incident(
         id=row["id"],

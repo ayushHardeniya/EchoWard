@@ -28,18 +28,22 @@ Agora RTC Web SDK  ── token/agent ──▶  app/agora.py            ──�
                                          (transcript webhook,             ASR/TTS)
                                           unverified — see below)
 
-IncidentPanel      ── conversation ─▶  app/incidents_api.py
-  (dev bridge)     ◀── state ────────   app/intelligence.py    ──────▶  Gemini (structured
-                                         app/incident_db.py               extraction only)
-                                         (SQLite)
+IncidentDashboard  ── conversation ─▶  app/incidents_api.py
+  (live UI)                              app/intelligence.py    ──────▶  Gemini (structured
+                   ◀── WS broadcast ──   app/incident_db.py               extraction only)
+                       (state)           app/realtime.py
+                                         (SQLite + in-process WebSocket fanout)
 ```
 
-The voice loop (Phase 2) and incident intelligence (M2) are two independent backend concerns that
-happen to share one FastAPI app and one SQLite file. A conversation turn can reach the
-intelligence pipeline either directly (`POST /api/incidents/{id}/conversation`, what the
-`IncidentPanel` dev bridge and the tests use) or — once wired up in a real Agora project — via the
-`POST /api/agora/webhook/{incident_id}` adapter. See CLAUDE.md's "Incident intelligence (M2)"
-section for the full design and its known gaps.
+The voice loop (Phase 2) and incident intelligence (M2/M3) are independent backend concerns that
+share one FastAPI process and one SQLite file. A conversation turn can reach the intelligence
+pipeline either directly (`POST /api/incidents/{id}/conversation`, what `IncidentDashboard`'s dev
+control and the tests use) or — once wired up in a real Agora project — via the
+`POST /api/agora/webhook/{incident_id}` adapter. Every meaningful state change (a conversation turn
+that actually extracted something, or a status change) is broadcast over
+`WS /api/incidents/{id}/stream` to every dashboard currently watching that incident. See
+CLAUDE.md's "Incident intelligence (M2)" and "Realtime architecture (M3)" sections for full design
+detail and known gaps.
 
 ## Prerequisites
 
@@ -148,16 +152,39 @@ curl -s -X POST http://localhost:8000/api/incidents/<incident_id>/conversation \
 
 # 3. Read the current structured state at any time
 curl -s http://localhost:8000/api/incidents/<incident_id>/state
+
+# 4. Move the incident through its lifecycle
+curl -s -X PATCH http://localhost:8000/api/incidents/<incident_id>/status \
+  -H "Content-Type: application/json" \
+  -d '{"status": "mitigating"}'
 ```
 
-Or use the **Incident Intelligence** panel at the bottom of http://localhost:3000 — it does the
-same three calls with a small form instead of curl, and shows fact/hypothesis/decision/action/
-conflict/timeline counts plus recent entries. It's a development bridge for this milestone, not
-the final dashboard (that's M3).
+Or open http://localhost:3000, create/open an incident in the **Incident Command** panel, and use
+the small "Dev: send a test conversation statement" control at the bottom of the dashboard — same
+calls, no curl needed.
 
 Automated tests (`pytest`) exercise the full pipeline — including the exact 5-turn scenario from
 the M2 spec (fact → hypothesis → conflict → decision → action-with-owner) — with the LLM call
 mocked, so `pytest` needs no `GEMINI_API_KEY` either.
+
+## Exercising the live dashboard / realtime updates
+
+1. Start the backend and frontend. Open http://localhost:3000 in **two browser tabs**.
+2. In tab 1, create an incident in the Incident Command panel. Copy the incident id shown under
+   its title (`#…`).
+3. In tab 2, paste that id into "Or paste an existing incident id" and click **Open**. Both tabs
+   are now watching the same incident (each opens its own WebSocket connection to
+   `/api/incidents/{id}/stream`).
+4. In either tab, expand "Dev: send a test conversation statement" and send one (needs
+   `GEMINI_API_KEY`), or change the status dropdown. **Both tabs update within roughly a second**,
+   with no manual refresh — that's the realtime broadcast working.
+5. To see the reconnect behavior: stop the backend (Ctrl-C) while a tab is open. Its connection dot
+   turns red ("Disconnected"), then amber ("Reconnecting…") as it retries with backoff. Restart the
+   backend — the tab reconnects and its state refreshes automatically.
+
+Without a `GEMINI_API_KEY`, everything above still works except step 4's conversation turn (the
+status-dropdown broadcast doesn't need Gemini at all, so that alone is enough to see realtime
+updates end-to-end with zero external credentials).
 
 ## Starting a voice room
 
@@ -212,17 +239,28 @@ a microphone. Manual verification procedure:
 - Fact/hypothesis/conflict classification is a prompting discipline enforced by the extraction
   system prompt, not by independent verification code — it's only as reliable as the LLM's
   adherence to those instructions.
-- No incident dashboard yet (`IncidentPanel` is a dev bridge, not the real UI), no persistent
-  incident record beyond SQLite, no Slack/Jira/PagerDuty integration, no authentication, no human
-  approval workflow, no spoken incident summaries — all intentionally out of scope until later
-  milestones.
+- The realtime WebSocket layer is a single in-process connection manager (no Redis/pub-sub) — by
+  design for this MVP, but it means state only fans out to clients connected to *this* backend
+  process, and a backend restart drops all live connections (they reconnect and refetch
+  automatically, so this is a brief blip, not data loss — SQLite is still the source of truth).
+- The dashboard was verified via `next build`/dev-server HTML output, `pytest`'s WebSocket tests,
+  and a live `uvicorn` + Node `WebSocket` client round trip — not in an actual browser (none
+  available in this environment). Layout/visual behavior should be sanity-checked in a real browser
+  before a live demo.
+- Incident status has no transition rules (any status → any other) and no automated triggers —
+  it's a direct, human-driven field, not a workflow engine, by design for this milestone.
+- No persistent incident record beyond SQLite, no Slack/Jira/PagerDuty integration, no
+  authentication, no human approval workflow, no spoken incident summaries — all intentionally out
+  of scope until later milestones.
 - Frontend has no automated test runner yet (lint + `tsc --noEmit` + `next build` only).
 
 ## Status
 
-Phase 1 (foundation), Phase 2 (Agora voice MVP), and Phase 3/M2 (incident intelligence) are
-complete: runnable Next.js frontend + FastAPI backend with SQLite wiring, health check, a working
-Agora RTC + Conversational AI voice room, and a Gemini-backed pipeline that turns conversation
-turns into structured facts/hypotheses/decisions/actions/timeline/conflicts — all pending
-live-account verification for the two external integrations (Agora, Gemini) as detailed above.
-Next milestone is M3: a live/realtime incident dashboard. See CLAUDE.md for full details.
+Phase 1 (foundation), Phase 2 (Agora voice MVP), Phase 3/M2 (incident intelligence), and Phase
+4/M3 (live incident dashboard) are complete: a runnable Next.js frontend + FastAPI backend with
+SQLite wiring, health check, a working Agora RTC + Conversational AI voice room, a Gemini-backed
+pipeline that turns conversation turns into structured facts/hypotheses/decisions/actions/
+timeline/conflicts, and a WebSocket-driven live dashboard that keeps every connected browser in
+sync with that state — pending live-account verification for the two external integrations
+(Agora, Gemini) as detailed above. Next milestone is M4: coordination intelligence. See CLAUDE.md
+for full details.

@@ -190,6 +190,10 @@ class CreateIncidentRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class UpdateIncidentStatusRequest(BaseModel):
+    status: IncidentStatus
+
+
 class ConversationTurnRequest(BaseModel):
     speaker: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=4000)

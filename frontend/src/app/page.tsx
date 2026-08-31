@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import IncidentPanel from "@/components/IncidentPanel";
+import IncidentDashboard from "@/components/IncidentDashboard";
 import { type AgentStatus, useAgoraRoom } from "@/lib/useAgoraRoom";
 
 const CONNECTION_LABEL: Record<string, string> = {
@@ -42,7 +42,7 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-6 py-10">
+    <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-6 py-10">
       <header>
         <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">EchoWard</h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -161,7 +161,7 @@ export default function Home() {
         </div>
       )}
 
-      <IncidentPanel />
+      <IncidentDashboard titleHint={room.channel ?? undefined} />
     </main>
   );
 }

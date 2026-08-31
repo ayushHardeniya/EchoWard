@@ -1,6 +1,7 @@
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
 from app import incident_db
 from app.incident_models import (
@@ -9,9 +10,11 @@ from app.incident_models import (
     CreateIncidentRequest,
     Incident,
     IncidentState,
+    UpdateIncidentStatusRequest,
 )
 from app.intelligence import IncidentNotFoundError, process_conversation_turn
 from app.llm import LLMNotConfiguredError, LLMOutputError
+from app.realtime import manager
 
 logger = logging.getLogger("echoward.incidents")
 
@@ -41,10 +44,29 @@ def get_incident_state(incident_id: str) -> IncidentState:
     return state
 
 
+@router.patch("/{incident_id}/status", response_model=IncidentState)
+async def update_incident_status(incident_id: str, body: UpdateIncidentStatusRequest) -> IncidentState:
+    if incident_db.get_incident(incident_id) is None:
+        raise HTTPException(status_code=404, detail=f"Incident not found: {incident_id}")
+
+    incident_db.update_incident_status(incident_id, body.status)
+    state = incident_db.get_incident_state(incident_id)
+    assert state is not None
+    logger.info("Incident status updated: id=%s status=%s", incident_id, body.status.value)
+
+    await manager.broadcast_state(incident_id, state)
+    return state
+
+
 @router.post("/{incident_id}/conversation", response_model=ConversationTurnResponse)
-def post_conversation_turn(incident_id: str, body: ConversationTurnRequest) -> ConversationTurnResponse:
+async def post_conversation_turn(incident_id: str, body: ConversationTurnRequest) -> ConversationTurnResponse:
     try:
-        return process_conversation_turn(incident_id, body.speaker, body.text, body.occurred_at)
+        # process_conversation_turn is a blocking call (SQLite + a synchronous Gemini
+        # request) - run it off the event loop so the WebSocket broadcast below (and
+        # other connections' traffic) isn't stalled while it's in flight.
+        result = await run_in_threadpool(
+            process_conversation_turn, incident_id, body.speaker, body.text, body.occurred_at
+        )
     except IncidentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except LLMNotConfiguredError as exc:
@@ -55,3 +77,45 @@ def post_conversation_turn(incident_id: str, body: ConversationTurnRequest) -> C
         raise HTTPException(
             status_code=502, detail=f"Incident intelligence extraction failed: {exc}"
         ) from exc
+
+    # The DB write inside process_conversation_turn has already completed (and
+    # committed) by this point - broadcasting can only ever follow a successful,
+    # persisted write, never precede or race it.
+    if not result.changes.is_empty:
+        await manager.broadcast_state(incident_id, result.state)
+
+    return result
+
+
+@router.websocket("/{incident_id}/stream")
+async def incident_stream(websocket: WebSocket, incident_id: str) -> None:
+    """Live incident-state feed. Sends the current state immediately on connect,
+    then a full `incident.updated` message after every meaningful conversation
+    turn or status change - see CLAUDE.md "Realtime architecture (M3)"."""
+    state = incident_db.get_incident_state(incident_id)
+    if state is None:
+        await websocket.close(code=4404, reason=f"Incident not found: {incident_id}")
+        return
+
+    await manager.connect(incident_id, websocket)
+    logger.info(
+        "Incident stream connected: incident=%s connections=%d",
+        incident_id,
+        manager.connection_count(incident_id),
+    )
+    try:
+        await websocket.send_json(
+            {"type": "incident.updated", "incident_id": incident_id, "state": state.model_dump(mode="json")}
+        )
+        while True:
+            # No client->server protocol; this just blocks until disconnect.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(incident_id, websocket)
+        logger.info(
+            "Incident stream disconnected: incident=%s connections=%d",
+            incident_id,
+            manager.connection_count(incident_id),
+        )
