@@ -19,23 +19,6 @@ logger = logging.getLogger("echoward.agora")
 
 router = APIRouter(prefix="/api/agora", tags=["agora"])
 
-ECHOWARD_SYSTEM_PROMPT = """You are EchoWard, a real-time AI incident commander participating \
-in a technical incident room.
-
-You are an operational teammate, not an autonomous decision maker.
-
-Listen carefully to what participants say.
-Ask concise clarification questions when necessary.
-Do not invent facts or claim a root cause without evidence.
-For this initial voice MVP, focus on understanding the conversation and responding naturally.
-
-Keep responses concise enough for a live incident room."""
-
-ECHOWARD_GREETING = (
-    "EchoWard online and listening. Go ahead and describe what you're seeing."
-)
-
-
 def build_rtc_token(
     app_id: str,
     app_certificate: str,
@@ -62,42 +45,20 @@ def build_rtc_token(
 def build_agent_join_payload(
     settings: Settings, channel: str, agent_uid: int, agent_token: str
 ) -> dict:
-    """Build the request body for the Conversational AI Engine `join` endpoint."""
+    """Build the request body for the Conversational AI Engine `join` endpoint.
+
+    ASR/LLM/TTS are supplied by the published Agent Builder pipeline
+    (`pipeline_id`, top-level per the current API), not duplicated here.
+    """
     return {
         "name": f"echoward-{channel}-{secrets.token_hex(4)}",
+        "pipeline_id": settings.agora_agent_pipeline_id,
         "properties": {
             "channel": channel,
             "token": agent_token,
             "agent_rtc_uid": str(agent_uid),
             "remote_rtc_uids": ["*"],
             "idle_timeout": 120,
-            "asr": {
-                "credential_mode": "managed",
-                "vendor": settings.agora_asr_vendor,
-                "params": {
-                    "language": settings.agora_asr_language,
-                    "model": settings.agora_asr_model,
-                },
-            },
-            "llm": {
-                "credential_mode": "managed",
-                "vendor": settings.agora_llm_vendor,
-                "system_messages": [{"role": "system", "content": ECHOWARD_SYSTEM_PROMPT}],
-                "greeting_message": ECHOWARD_GREETING,
-                "failure_message": (
-                    "Sorry, I didn't catch that — could you repeat it?"
-                ),
-                "max_history": 20,
-                "params": {"model": settings.agora_llm_model},
-            },
-            "tts": {
-                "credential_mode": "managed",
-                "vendor": settings.agora_tts_vendor,
-                "params": {
-                    "model": settings.agora_tts_model,
-                    "voice_setting": {"voice_id": settings.agora_tts_voice_id},
-                },
-            },
         },
     }
 
@@ -116,8 +77,9 @@ def _require_convo_ai_configured(settings: Settings) -> None:
     if not settings.agora_convo_ai_configured:
         raise HTTPException(
             status_code=503,
-            detail="Agora Conversational AI is not configured: set AGORA_CUSTOMER_ID and "
-            "AGORA_CUSTOMER_SECRET in backend/.env (Console > Project > RESTful API).",
+            detail="Agora Conversational AI is not configured: set AGORA_CUSTOMER_ID, "
+            "AGORA_CUSTOMER_SECRET (Console > Project > RESTful API), and "
+            "AGORA_AGENT_PIPELINE_ID (Console > Agent Builder) in backend/.env.",
         )
 
 

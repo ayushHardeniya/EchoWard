@@ -37,17 +37,11 @@ class Settings(BaseSettings):
     # Fixed RTC uid the EchoWard agent joins each channel as.
     agora_agent_uid: int = 9999
 
-    # Agora-managed ASR/LLM/TTS vendor+model preset (credential_mode="managed"),
-    # so no separate vendor API keys (Gemini, Deepgram, etc.) are required for
-    # the voice MVP. See CLAUDE.md for details and how to swap to a custom LLM.
-    agora_asr_vendor: str = "deepgram"
-    agora_asr_model: str = "nova-3"
-    agora_asr_language: str = "en-US"
-    agora_llm_vendor: str = "openai"
-    agora_llm_model: str = "gpt-4o-mini"
-    agora_tts_vendor: str = "minimax"
-    agora_tts_model: str = "speech-2.6-turbo"
-    agora_tts_voice_id: str = "English_captivating_female1"
+    # Published Agent Builder pipeline id (Console > Agent Builder), passed as a
+    # top-level `pipeline_id` on the Conversational AI Engine `join` call. The
+    # published pipeline is the source of truth for ASR/LLM/TTS — we no longer
+    # send a separate vendor/model config in the join payload.
+    agora_agent_pipeline_id: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -59,7 +53,11 @@ class Settings(BaseSettings):
 
     @property
     def agora_convo_ai_configured(self) -> bool:
-        return self.agora_configured and bool(self.agora_customer_id and self.agora_customer_secret)
+        return (
+            self.agora_configured
+            and bool(self.agora_customer_id and self.agora_customer_secret)
+            and bool(self.agora_agent_pipeline_id)
+        )
 
     @property
     def gemini_configured(self) -> bool:
