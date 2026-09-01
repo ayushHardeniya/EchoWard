@@ -23,6 +23,7 @@ from app.incident_models import (
     IncidentStatus,
     QuestionStatus,
     TimelineEvent,
+    ToolResult,
     UnresolvedQuestion,
 )
 
@@ -67,6 +68,10 @@ CREATE TABLE IF NOT EXISTS actions (
     description TEXT NOT NULL,
     owner TEXT,
     status TEXT NOT NULL,
+    action_type TEXT,
+    target TEXT,
+    reason TEXT,
+    tool_result TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -114,9 +119,30 @@ CREATE TABLE IF NOT EXISTS coordination_findings (
 """
 
 
+# M5 added columns to `actions` after it already existed in deployed local dev
+# databases (SQLite's `CREATE TABLE IF NOT EXISTS` doesn't add columns to a
+# table that already exists) - this brings an older `actions` table up to date
+# idempotently. A no-op for a freshly created table, which already has these
+# columns from the DDL above.
+_ACTIONS_MIGRATION_COLUMNS: dict[str, str] = {
+    "action_type": "TEXT",
+    "target": "TEXT",
+    "reason": "TEXT",
+    "tool_result": "TEXT",
+}
+
+
+def _migrate_actions_table(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
+    for column, sql_type in _ACTIONS_MIGRATION_COLUMNS.items():
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE actions ADD COLUMN {column} {sql_type}")
+
+
 def init_incident_schema() -> None:
     with get_connection() as conn:
         conn.executescript(SCHEMA)
+        _migrate_actions_table(conn)
 
 
 def _new_id() -> str:
@@ -331,12 +357,17 @@ def update_action_owner(conn: sqlite3.Connection, action_id: str, owner: str, wh
 
 
 def _row_to_action(row: sqlite3.Row) -> Action:
+    tool_result = ToolResult.model_validate_json(row["tool_result"]) if row["tool_result"] is not None else None
     return Action(
         id=row["id"],
         incident_id=row["incident_id"],
         description=row["description"],
         owner=row["owner"],
         status=ActionStatus(row["status"]),
+        action_type=row["action_type"],
+        target=row["target"],
+        reason=row["reason"],
+        tool_result=tool_result,
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -359,6 +390,59 @@ def list_open_actions(conn: sqlite3.Connection, incident_id: str) -> list[Action
         (incident_id, ActionStatus.pending.value, ActionStatus.in_progress.value),
     ).fetchall()
     return [_row_to_action(r) for r in rows]
+
+
+def get_action(incident_id: str, action_id: str) -> Action | None:
+    """Scoped to incident_id - the caller (app/actions.py) relies on this to
+
+    enforce "an action must belong to the incident" before touching it.
+    """
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM actions WHERE id = ? AND incident_id = ?", (action_id, incident_id)
+        ).fetchone()
+    return _row_to_action(row) if row else None
+
+
+# --- Action execution lifecycle (M5) --------------------------------------------
+
+
+def prepare_action(
+    conn: sqlite3.Connection, action_id: str, action_type: str, target: str, reason: str, when: datetime
+) -> Action:
+    """Attach a validated tool-action proposal to an existing Action and move
+
+    it to `awaiting_confirmation`. Callers must validate action_type/target
+    (app/tools.py) and the action's current status (app/actions.py) first -
+    this function only writes what it's given.
+    """
+    conn.execute(
+        "UPDATE actions SET action_type = ?, target = ?, reason = ?, status = ?, updated_at = ? WHERE id = ?",
+        (action_type, target, reason, ActionStatus.awaiting_confirmation.value, _iso(when), action_id),
+    )
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+    return _row_to_action(row)
+
+
+def update_action_status(conn: sqlite3.Connection, action_id: str, status: ActionStatus, when: datetime) -> Action:
+    conn.execute("UPDATE actions SET status = ?, updated_at = ? WHERE id = ?", (status.value, _iso(when), action_id))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+    return _row_to_action(row)
+
+
+def set_action_result(
+    conn: sqlite3.Connection, action_id: str, status: ActionStatus, tool_result: ToolResult, when: datetime
+) -> Action:
+    conn.execute(
+        "UPDATE actions SET status = ?, tool_result = ?, updated_at = ? WHERE id = ?",
+        (status.value, tool_result.model_dump_json(), _iso(when), action_id),
+    )
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+    return _row_to_action(row)
 
 
 # --- Timeline --------------------------------------------------------------------

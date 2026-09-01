@@ -260,6 +260,57 @@ def test_open_question_produces_unresolved_risk_finding() -> None:
     assert risks[0].dedup_key == "unresolved_risk:q1"
 
 
+def test_action_awaiting_confirmation_produces_finding() -> None:
+    action = Action(
+        id="a1", incident_id="inc-1", description="Roll back payment service.", owner="Bob",
+        status=ActionStatus.awaiting_confirmation, action_type="rollback_payment_service",
+        target="payment-service", reason="Error rate spiking.", created_at=T0, updated_at=T0,
+    )
+    findings = analyze_incident_deterministic(_state(actions=[action]))
+    awaiting = [f for f in findings if f.type == CoordinationFindingType.action_awaiting_confirmation]
+    assert len(awaiting) == 1
+    assert awaiting[0].dedup_key == "action_awaiting_confirmation:a1"
+    assert awaiting[0].related_ids == ["a1"]
+
+
+def test_confirmed_action_produces_no_awaiting_confirmation_finding() -> None:
+    action = Action(
+        id="a1", incident_id="inc-1", description="Roll back payment service.", owner="Bob",
+        status=ActionStatus.confirmed, action_type="rollback_payment_service",
+        target="payment-service", reason="Error rate spiking.", created_at=T0, updated_at=T0,
+    )
+    findings = analyze_incident_deterministic(_state(actions=[action]))
+    assert not any(f.type == CoordinationFindingType.action_awaiting_confirmation for f in findings)
+
+
+def test_failed_action_produces_finding() -> None:
+    from app.incident_models import ToolResult
+
+    action = Action(
+        id="a1", incident_id="inc-1", description="Roll back payment service.", owner="Bob",
+        status=ActionStatus.failed, action_type="rollback_payment_service", target="payment-service",
+        reason="Error rate spiking.", tool_result=ToolResult(
+            success=False, message="Rollback could not be completed.", executed_at=T0
+        ),
+        created_at=T0, updated_at=T0,
+    )
+    findings = analyze_incident_deterministic(_state(actions=[action]))
+    failed = [f for f in findings if f.type == CoordinationFindingType.action_failed]
+    assert len(failed) == 1
+    assert failed[0].dedup_key == "action_failed:a1"
+    assert "Rollback could not be completed" in failed[0].description
+
+
+def test_completed_action_produces_no_failed_finding() -> None:
+    action = Action(
+        id="a1", incident_id="inc-1", description="Roll back payment service.", owner="Bob",
+        status=ActionStatus.completed, action_type="rollback_payment_service", target="payment-service",
+        reason="Error rate spiking.", created_at=T0, updated_at=T0,
+    )
+    findings = analyze_incident_deterministic(_state(actions=[action]))
+    assert not any(f.type == CoordinationFindingType.action_failed for f in findings)
+
+
 def test_situational_summary_always_present_and_reflects_counts() -> None:
     action = Action(
         id="a1", incident_id="inc-1", description="Roll back payment service.", owner=None,

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   type Action,
+  confirmAction,
   type Conflict,
   type CoordinationFinding,
   type CoordinationSeverity,
@@ -12,6 +13,7 @@ import {
   type Hypothesis,
   INCIDENT_STATUSES,
   type IncidentStatus,
+  prepareAction,
   sendConversationTurn,
   type TimelineEvent,
   type UnresolvedQuestion,
@@ -31,9 +33,18 @@ const STATUS_STYLE: Record<IncidentStatus, string> = {
 const ACTION_STATUS_STYLE: Record<string, string> = {
   pending: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   in_progress: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  awaiting_confirmation: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  executing: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
   completed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   blocked: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 };
+
+// M5's one allowlisted demo action (see backend/app/tools.py's ALLOWED_ACTIONS) -
+// the dashboard only ever offers to prepare this, never arbitrary text.
+const ROLLBACK_ACTION_TYPE = "rollback_payment_service";
+const ROLLBACK_TARGET = "payment-service";
 
 const COORDINATION_SEVERITY_BADGE: Record<CoordinationSeverity, string> = {
   high: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
@@ -326,20 +337,7 @@ function DashboardView({
           {state.actions.length === 0 && <Empty text="No action items yet." />}
           <ul className="flex flex-col gap-2">
             {state.actions.map((a: Action) => (
-              <li
-                key={a.id}
-                className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800"
-              >
-                <p className="text-zinc-900 dark:text-zinc-100">{a.description}</p>
-                <div className="mt-1 flex items-center justify-between text-xs">
-                  <span className={a.owner ? "text-zinc-600 dark:text-zinc-300" : "italic text-zinc-400"}>
-                    Owner: {a.owner ?? "Unassigned"}
-                  </span>
-                  <span className={`rounded-full px-2 py-0.5 font-medium ${ACTION_STATUS_STYLE[a.status]}`}>
-                    {a.status.replace("_", " ")}
-                  </span>
-                </div>
-              </li>
+              <ActionRow key={a.id} incidentId={incidentId} action={a} />
             ))}
           </ul>
         </Panel>
@@ -427,6 +425,116 @@ function CoordinationPanel({ findings }: { findings: CoordinationFinding[] }) {
         </ul>
       )}
     </Panel>
+  );
+}
+
+/**
+ * One action's card, including M5's prepare/confirm controls. The server
+ * enforces the actual safety boundary (see app/actions.py) - this component
+ * only ever offers the buttons that are valid for the action's current
+ * status, never lets the frontend "execute" anything directly.
+ */
+function ActionRow({ incidentId, action }: { incidentId: string; action: Action }) {
+  const [reason, setReason] = useState(action.description);
+  const [confirmedBy, setConfirmedBy] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  async function handlePrepare() {
+    setBusy(true);
+    setRowError(null);
+    try {
+      await prepareAction(incidentId, action.id, ROLLBACK_ACTION_TYPE, ROLLBACK_TARGET, reason.trim() || action.description);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : "Failed to prepare action");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConfirm() {
+    setBusy(true);
+    setRowError(null);
+    try {
+      await confirmAction(incidentId, action.id, confirmedBy.trim() || undefined);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : "Failed to confirm action");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canPrepare = action.status === "pending" || action.status === "in_progress";
+  const awaitingConfirmation = action.status === "awaiting_confirmation";
+  const terminal = action.status === "completed" || action.status === "failed";
+
+  return (
+    <li className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+      <p className="text-zinc-900 dark:text-zinc-100">{action.description}</p>
+      <div className="mt-1 flex items-center justify-between text-xs">
+        <span className={action.owner ? "text-zinc-600 dark:text-zinc-300" : "italic text-zinc-400"}>
+          Owner: {action.owner ?? "Unassigned"}
+        </span>
+        <span className={`rounded-full px-2 py-0.5 font-medium ${ACTION_STATUS_STYLE[action.status]}`}>
+          {action.status.replace(/_/g, " ")}
+        </span>
+      </div>
+
+      {canPrepare && (
+        <div className="mt-2 flex flex-col gap-1.5 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+          <input
+            className="rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason for rollback"
+          />
+          <button
+            onClick={handlePrepare}
+            disabled={busy}
+            className="self-start rounded-md bg-zinc-200 px-3 py-1 text-xs font-medium text-zinc-800 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-100"
+          >
+            Prepare: Roll back payment service
+          </button>
+        </div>
+      )}
+
+      {awaitingConfirmation && (
+        <div className="mt-2 flex flex-col gap-1.5 border-t border-amber-200 pt-2 dark:border-amber-900">
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            {action.action_type} on {action.target} — {action.reason}
+          </p>
+          <div className="flex gap-2">
+            <input
+              className="flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
+              value={confirmedBy}
+              onChange={(e) => setConfirmedBy(e.target.value)}
+              placeholder="Your name (optional)"
+            />
+            <button
+              onClick={handleConfirm}
+              disabled={busy}
+              className="rounded-md bg-amber-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              Confirm &amp; Execute
+            </button>
+          </div>
+        </div>
+      )}
+
+      {terminal && action.tool_result && (
+        <p
+          className={`mt-2 border-t pt-2 text-xs ${
+            action.tool_result.success
+              ? "border-emerald-100 text-emerald-700 dark:border-emerald-900 dark:text-emerald-400"
+              : "border-red-100 text-red-700 dark:border-red-900 dark:text-red-400"
+          }`}
+        >
+          {action.tool_result.message}
+        </p>
+      )}
+
+      {rowError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{rowError}</p>}
+    </li>
   );
 }
 

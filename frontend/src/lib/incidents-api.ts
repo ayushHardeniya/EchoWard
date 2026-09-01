@@ -40,11 +40,23 @@ export interface Decision {
   timestamp: string;
 }
 
+export interface ToolResult {
+  success: boolean;
+  message: string;
+  external_id: string | null;
+  executed_at: string;
+  metadata: Record<string, string>;
+}
+
 export interface Action {
   id: string;
   description: string;
   owner: string | null;
   status: string;
+  action_type: string | null;
+  target: string | null;
+  reason: string | null;
+  tool_result: ToolResult | null;
   created_at: string;
   updated_at: string;
 }
@@ -85,7 +97,9 @@ export type CoordinationFindingType =
   | "decision_followup"
   | "hypothesis_risk"
   | "unresolved_risk"
-  | "situational_summary";
+  | "situational_summary"
+  | "action_awaiting_confirmation"
+  | "action_failed";
 
 export type CoordinationSeverity = "info" | "low" | "medium" | "high";
 
@@ -168,6 +182,30 @@ export function getIncidentState(incidentId: string): Promise<IncidentState> {
 
 export function updateIncidentStatus(incidentId: string, status: IncidentStatus): Promise<IncidentState> {
   return sendJson<IncidentState>("PATCH", `/api/incidents/${incidentId}/status`, { status });
+}
+
+export function prepareAction(
+  incidentId: string,
+  actionId: string,
+  actionType: string,
+  target: string,
+  reason: string
+): Promise<IncidentState> {
+  return postJson<IncidentState>(`/api/incidents/${incidentId}/actions/${actionId}/prepare`, {
+    action_type: actionType,
+    target,
+    reason,
+  });
+}
+
+export function confirmAction(
+  incidentId: string,
+  actionId: string,
+  confirmedBy?: string
+): Promise<IncidentState> {
+  return postJson<IncidentState>(`/api/incidents/${incidentId}/actions/${actionId}/confirm`, {
+    confirmed_by: confirmedBy || null,
+  });
 }
 
 export function sendConversationTurn(

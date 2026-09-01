@@ -288,6 +288,53 @@ def _hypothesis_risk_findings(state: IncidentState) -> list[ProposedFinding]:
     return findings
 
 
+def _action_awaiting_confirmation_findings(state: IncidentState) -> list[ProposedFinding]:
+    """An action EchoWard has prepared but a human hasn't confirmed yet (M5) -
+
+    resolves automatically once the action moves past this status (confirmed,
+    executing, completed, or failed), since it's simply not proposed anymore.
+    """
+    findings = []
+    for a in state.actions:
+        if a.status != ActionStatus.awaiting_confirmation:
+            continue
+        findings.append(
+            ProposedFinding(
+                dedup_key=f"action_awaiting_confirmation:{a.id}",
+                type=CoordinationFindingType.action_awaiting_confirmation,
+                severity=CoordinationSeverity.high,
+                title="Action ready for execution, awaiting confirmation",
+                description=f'"{a.description}" has been prepared and needs human confirmation to execute.',
+                related_ids=[a.id],
+            )
+        )
+    return findings
+
+
+def _action_failed_findings(state: IncidentState) -> list[ProposedFinding]:
+    """A confirmed action whose execution failed (M5) - stays visible until a
+
+    human addresses it; EchoWard never silently retries or substitutes
+    another action.
+    """
+    findings = []
+    for a in state.actions:
+        if a.status != ActionStatus.failed:
+            continue
+        result_note = f" Result: {a.tool_result.message}" if a.tool_result else ""
+        findings.append(
+            ProposedFinding(
+                dedup_key=f"action_failed:{a.id}",
+                type=CoordinationFindingType.action_failed,
+                severity=CoordinationSeverity.high,
+                title="Action execution failed",
+                description=f'"{a.description}" did not complete successfully.{result_note}',
+                related_ids=[a.id],
+            )
+        )
+    return findings
+
+
 def _unresolved_question_findings(state: IncidentState) -> list[ProposedFinding]:
     findings = []
     for q in state.unresolved_questions:
@@ -313,6 +360,8 @@ def _situational_summary_finding(state: IncidentState) -> ProposedFinding:
     """
     open_actions = [a for a in state.actions if a.status in (ActionStatus.pending, ActionStatus.in_progress)]
     unowned = [a for a in open_actions if a.owner is None]
+    awaiting_confirmation = [a for a in state.actions if a.status == ActionStatus.awaiting_confirmation]
+    failed_actions = [a for a in state.actions if a.status == ActionStatus.failed]
     open_conflicts = [c for c in state.conflicts if c.status == ConflictStatus.unresolved]
     open_questions = [q for q in state.unresolved_questions if q.status == QuestionStatus.open]
     open_hypotheses = [h for h in state.hypotheses if h.status == HypothesisStatus.proposed]
@@ -323,6 +372,10 @@ def _situational_summary_finding(state: IncidentState) -> ProposedFinding:
         f"{len(open_questions)} open question(s)",
         f"{len(open_hypotheses)} unconfirmed hypothesis(es)" if open_hypotheses else "no hypotheses proposed yet",
     ]
+    if awaiting_confirmation:
+        parts.append(f"{len(awaiting_confirmation)} action(s) awaiting confirmation")
+    if failed_actions:
+        parts.append(f"{len(failed_actions)} action(s) failed execution")
 
     return ProposedFinding(
         dedup_key="situational_summary",
@@ -341,6 +394,8 @@ def analyze_incident_deterministic(state: IncidentState) -> list[ProposedFinding
     findings += _stale_action_findings(state)
     findings += _decision_followup_findings(state)
     findings += _hypothesis_risk_findings(state)
+    findings += _action_awaiting_confirmation_findings(state)
+    findings += _action_failed_findings(state)
     findings += _unresolved_question_findings(state)
     findings.append(_situational_summary_finding(state))
     return findings

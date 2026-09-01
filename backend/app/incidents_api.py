@@ -3,13 +3,15 @@ import logging
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from app import coordination, incident_db
+from app import actions, coordination, incident_db, tools
 from app.incident_models import (
+    ConfirmActionRequest,
     ConversationTurnRequest,
     ConversationTurnResponse,
     CreateIncidentRequest,
     Incident,
     IncidentState,
+    PrepareActionRequest,
     UpdateIncidentStatusRequest,
 )
 from app.intelligence import IncidentNotFoundError, process_conversation_turn
@@ -93,6 +95,56 @@ async def post_conversation_turn(incident_id: str, body: ConversationTurnRequest
             await manager.broadcast_state(incident_id, state)
 
     return result
+
+
+@router.post("/{incident_id}/actions/{action_id}/prepare", response_model=IncidentState)
+async def prepare_action(incident_id: str, action_id: str, body: PrepareActionRequest) -> IncidentState:
+    """Validates a structured action_type/target against the tool allowlist
+
+    and attaches it to the action as `awaiting_confirmation`. Never executes
+    anything - see app/tools.py's ALLOWED_ACTIONS and app/actions.py.
+    """
+    try:
+        state = await run_in_threadpool(
+            actions.prepare_action, incident_id, action_id, body.action_type, body.target, body.reason
+        )
+    except (IncidentNotFoundError, actions.IncidentNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except actions.ActionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except tools.ActionValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except actions.ActionStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    logger.info("Action prepared: incident=%s action=%s type=%s", incident_id, action_id, body.action_type)
+    await manager.broadcast_state(incident_id, state)
+    return state
+
+
+@router.post("/{incident_id}/actions/{action_id}/confirm", response_model=IncidentState)
+async def confirm_action(incident_id: str, action_id: str, body: ConfirmActionRequest) -> IncidentState:
+    """The only endpoint that causes anything to execute - requires the action
+
+    to already be `awaiting_confirmation` (i.e. already prepared and
+    allowlist-validated). This is the explicit human confirmation step:
+    nothing executes without a request to this endpoint, and it cannot be
+    called successfully more than once for the same action.
+    """
+    try:
+        state = await run_in_threadpool(
+            actions.confirm_and_execute_action, incident_id, action_id, body.confirmed_by
+        )
+    except (IncidentNotFoundError, actions.IncidentNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except actions.ActionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except actions.ActionStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    logger.info("Action confirmed and executed: incident=%s action=%s", incident_id, action_id)
+    await manager.broadcast_state(incident_id, state)
+    return state
 
 
 @router.websocket("/{incident_id}/stream")

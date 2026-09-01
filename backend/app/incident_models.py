@@ -14,7 +14,13 @@ class IncidentStatus(str, Enum):
 class ActionStatus(str, Enum):
     pending = "pending"
     in_progress = "in_progress"
+    # M5 execution lifecycle - see app/actions.py. Entered only via the
+    # /prepare and /confirm endpoints, never automatically.
+    awaiting_confirmation = "awaiting_confirmation"
+    confirmed = "confirmed"
+    executing = "executing"
     completed = "completed"
+    failed = "failed"
     blocked = "blocked"
 
 
@@ -43,6 +49,11 @@ class CoordinationFindingType(str, Enum):
     hypothesis_risk = "hypothesis_risk"
     unresolved_risk = "unresolved_risk"
     situational_summary = "situational_summary"
+    # M5: surfaces action-execution lifecycle events as coordination findings
+    # too, so the "team needs to pay attention" view and the action lifecycle
+    # stay in sync - see app/coordination.py.
+    action_awaiting_confirmation = "action_awaiting_confirmation"
+    action_failed = "action_failed"
 
 
 class CoordinationSeverity(str, Enum):
@@ -96,12 +107,33 @@ class Decision(BaseModel):
     timestamp: datetime
 
 
+class ToolResult(BaseModel):
+    """The outcome of executing one action through a ToolAdapter (M5, see
+
+    app/tools.py). Structured and minimal - success/message/optional
+    external_id/metadata - never a place to stash arbitrary blobs.
+    """
+
+    success: bool
+    message: str
+    external_id: str | None = None
+    executed_at: datetime
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
 class Action(BaseModel):
     id: str
     incident_id: str
     description: str
     owner: str | None = None
     status: ActionStatus = ActionStatus.pending
+    # M5 execution fields - only meaningful once prepare()'d; None before that.
+    # action_type/target are always one of app/tools.py's ALLOWED_ACTIONS pairs
+    # by the time they're set - validated server-side, never trusted as-is.
+    action_type: str | None = None
+    target: str | None = None
+    reason: str | None = None
+    tool_result: ToolResult | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -258,6 +290,25 @@ class CreateIncidentRequest(BaseModel):
 
 class UpdateIncidentStatusRequest(BaseModel):
     status: IncidentStatus
+
+
+class PrepareActionRequest(BaseModel):
+    """Structured, allowlist-checked proposal for what an action would do if
+
+    executed - see app/tools.py's ALLOWED_ACTIONS for the actual boundary.
+    This is never free text passed through to a shell/URL/subprocess.
+    """
+
+    action_type: str = Field(min_length=1, max_length=100)
+    target: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ConfirmActionRequest(BaseModel):
+    # Free-text attribution only (no auth in this MVP - see CLAUDE.md), same
+    # convention as `speaker`/`decided_by` elsewhere. Optional: falls back to
+    # a generic label so confirmation never silently fails for lack of a name.
+    confirmed_by: str | None = Field(default=None, max_length=100)
 
 
 class ConversationTurnRequest(BaseModel):
