@@ -10,6 +10,10 @@ from app.incident_models import (
     Conflict,
     ConflictStatement,
     ConflictStatus,
+    CoordinationFinding,
+    CoordinationFindingStatus,
+    CoordinationFindingType,
+    CoordinationSeverity,
     Decision,
     Fact,
     Hypothesis,
@@ -91,6 +95,21 @@ CREATE TABLE IF NOT EXISTS conflicts (
     involved_sources TEXT NOT NULL,
     status TEXT NOT NULL,
     detected_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS coordination_findings (
+    id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL REFERENCES incidents(id),
+    dedup_key TEXT NOT NULL,
+    type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    related_ids TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (incident_id, dedup_key)
 );
 """
 
@@ -491,6 +510,153 @@ def list_open_conflicts(conn: sqlite3.Connection, incident_id: str) -> list[Conf
     return [_row_to_conflict(r) for r in rows]
 
 
+# --- Coordination findings (M4) -----------------------------------------------
+# One row per (incident, dedup_key) - app/coordination.py owns dedup_key format
+# and is the only writer that decides *when* to upsert/resolve a finding; this
+# module only knows how to persist/read whatever it's given.
+
+_SEVERITY_RANK_SQL = "CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END"
+
+
+def _row_to_coordination_finding(row: sqlite3.Row) -> CoordinationFinding:
+    return CoordinationFinding(
+        id=row["id"],
+        incident_id=row["incident_id"],
+        dedup_key=row["dedup_key"],
+        type=CoordinationFindingType(row["type"]),
+        severity=CoordinationSeverity(row["severity"]),
+        title=row["title"],
+        description=row["description"],
+        related_ids=json.loads(row["related_ids"]),
+        status=CoordinationFindingStatus(row["status"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def upsert_coordination_finding(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    dedup_key: str,
+    type_: CoordinationFindingType,
+    severity: CoordinationSeverity,
+    title: str,
+    description: str,
+    related_ids: list[str],
+    when: datetime,
+) -> CoordinationFinding:
+    """Insert a new finding, or update the existing one for (incident_id, dedup_key)
+
+    in place - re-opening it if it had been resolved. A no-op (no write) if the
+    content is already identical and already open, so `updated_at` doesn't churn
+    on every analysis pass when nothing actually changed.
+    """
+    conn.row_factory = sqlite3.Row
+    related_json = json.dumps(related_ids)
+    existing = conn.execute(
+        "SELECT * FROM coordination_findings WHERE incident_id = ? AND dedup_key = ?",
+        (incident_id, dedup_key),
+    ).fetchone()
+
+    if existing is not None:
+        unchanged = (
+            existing["type"] == type_.value
+            and existing["severity"] == severity.value
+            and existing["title"] == title
+            and existing["description"] == description
+            and existing["related_ids"] == related_json
+            and existing["status"] == CoordinationFindingStatus.open.value
+        )
+        if unchanged:
+            return _row_to_coordination_finding(existing)
+        conn.execute(
+            "UPDATE coordination_findings SET type = ?, severity = ?, title = ?, description = ?, "
+            "related_ids = ?, status = ?, updated_at = ? WHERE id = ?",
+            (
+                type_.value,
+                severity.value,
+                title,
+                description,
+                related_json,
+                CoordinationFindingStatus.open.value,
+                _iso(when),
+                existing["id"],
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM coordination_findings WHERE id = ?", (existing["id"],)
+        ).fetchone()
+        return _row_to_coordination_finding(row)
+
+    finding = CoordinationFinding(
+        id=_new_id(),
+        incident_id=incident_id,
+        dedup_key=dedup_key,
+        type=type_,
+        severity=severity,
+        title=title,
+        description=description,
+        related_ids=related_ids,
+        status=CoordinationFindingStatus.open,
+        created_at=when,
+        updated_at=when,
+    )
+    conn.execute(
+        "INSERT INTO coordination_findings (id, incident_id, dedup_key, type, severity, title, "
+        "description, related_ids, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            finding.id,
+            incident_id,
+            dedup_key,
+            type_.value,
+            severity.value,
+            title,
+            description,
+            related_json,
+            finding.status.value,
+            _iso(when),
+            _iso(when),
+        ),
+    )
+    return finding
+
+
+def resolve_coordination_finding(conn: sqlite3.Connection, finding_id: str, when: datetime) -> None:
+    """Mark a finding resolved - a no-op if it's already resolved."""
+    conn.execute(
+        "UPDATE coordination_findings SET status = ?, updated_at = ? WHERE id = ? AND status != ?",
+        (
+            CoordinationFindingStatus.resolved.value,
+            _iso(when),
+            finding_id,
+            CoordinationFindingStatus.resolved.value,
+        ),
+    )
+
+
+def list_coordination_findings(incident_id: str) -> list[CoordinationFinding]:
+    """All findings regardless of status, for reconciliation - see app/coordination.py."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM coordination_findings WHERE incident_id = ? ORDER BY created_at ASC",
+            (incident_id,),
+        ).fetchall()
+    return [_row_to_coordination_finding(r) for r in rows]
+
+
+def list_open_coordination_findings(incident_id: str) -> list[CoordinationFinding]:
+    """Open findings only, most severe first - what the dashboard/API actually shows."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"SELECT * FROM coordination_findings WHERE incident_id = ? AND status = ? "
+            f"ORDER BY {_SEVERITY_RANK_SQL} ASC, created_at DESC",
+            (incident_id, CoordinationFindingStatus.open.value),
+        ).fetchall()
+    return [_row_to_coordination_finding(r) for r in rows]
+
+
 # --- Full state --------------------------------------------------------------------
 
 
@@ -507,4 +673,5 @@ def get_incident_state(incident_id: str) -> IncidentState | None:
         timeline=list_timeline(incident_id),
         unresolved_questions=list_questions(incident_id),
         conflicts=list_conflicts(incident_id),
+        coordination_findings=list_open_coordination_findings(incident_id),
     )

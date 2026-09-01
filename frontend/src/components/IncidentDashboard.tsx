@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import {
   type Action,
   type Conflict,
+  type CoordinationFinding,
+  type CoordinationSeverity,
   createIncident,
   type Decision,
   type Fact,
@@ -31,6 +33,20 @@ const ACTION_STATUS_STYLE: Record<string, string> = {
   in_progress: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
   completed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   blocked: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+};
+
+const COORDINATION_SEVERITY_BADGE: Record<CoordinationSeverity, string> = {
+  high: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  medium: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  low: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  info: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
+};
+
+const COORDINATION_SEVERITY_BORDER: Record<CoordinationSeverity, string> = {
+  high: "border-red-300 dark:border-red-900",
+  medium: "border-amber-300 dark:border-amber-900",
+  low: "border-zinc-200 dark:border-zinc-800",
+  info: "border-zinc-200 dark:border-zinc-800",
 };
 
 const STREAM_STYLE: Record<StreamStatus, { label: string; dot: string }> = {
@@ -234,6 +250,9 @@ function DashboardView({
         </div>
       )}
 
+      {/* Coordination — what the team needs to pay attention to next (M4) */}
+      <CoordinationPanel findings={state.coordination_findings} />
+
       {/* Facts / Hypotheses */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Panel title="Facts" badge="CONFIRMED" badgeClass="bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
@@ -372,6 +391,42 @@ function DashboardView({
 
       <DevConversationControl incidentId={incidentId} />
     </section>
+  );
+}
+
+/** Compact "what needs attention next" panel — findings, not raw AI text. */
+function CoordinationPanel({ findings }: { findings: CoordinationFinding[] }) {
+  const summary = findings.find((f) => f.type === "situational_summary");
+  const attention = findings.filter((f) => f.type !== "situational_summary");
+
+  return (
+    <Panel title="Coordination" badge="ATTENTION REQUIRED" badgeClass="bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">
+      {summary && (
+        <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">{summary.description}</p>
+      )}
+      {attention.length === 0 ? (
+        <Empty text="No coordination issues detected." />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {attention.map((f) => (
+            <li
+              key={f.id}
+              className={`rounded-md border px-3 py-2 text-sm ${COORDINATION_SEVERITY_BORDER[f.severity]}`}
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${COORDINATION_SEVERITY_BADGE[f.severity]}`}
+                >
+                  {f.severity}
+                </span>
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">{f.title}</p>
+              </div>
+              <p className="mt-1 text-zinc-600 dark:text-zinc-300">{f.description}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
   );
 }
 

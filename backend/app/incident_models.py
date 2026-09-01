@@ -34,6 +34,29 @@ class ConflictStatus(str, Enum):
     resolved = "resolved"
 
 
+class CoordinationFindingType(str, Enum):
+    conflict = "conflict"
+    missing_information = "missing_information"
+    unowned_action = "unowned_action"
+    stale_action = "stale_action"
+    decision_followup = "decision_followup"
+    hypothesis_risk = "hypothesis_risk"
+    unresolved_risk = "unresolved_risk"
+    situational_summary = "situational_summary"
+
+
+class CoordinationSeverity(str, Enum):
+    info = "info"
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class CoordinationFindingStatus(str, Enum):
+    open = "open"
+    resolved = "resolved"
+
+
 # --- Domain / persisted records -----------------------------------------------
 
 
@@ -114,6 +137,31 @@ class Conflict(BaseModel):
     detected_at: datetime
 
 
+class CoordinationFinding(BaseModel):
+    """A coordination-intelligence observation about the incident's current state
+
+    (M4): a conflict awaiting resolution, an unowned/stale action, a decision with
+    no tracked follow-up, a hypothesis being acted on as if confirmed, an open
+    risk, or a semantic information gap. Never a substitute for the underlying
+    Fact/Hypothesis/Action/Conflict record — always references it via
+    `related_ids` instead of duplicating it.
+    """
+
+    id: str
+    incident_id: str
+    type: CoordinationFindingType
+    severity: CoordinationSeverity
+    title: str
+    description: str
+    related_ids: list[str] = Field(default_factory=list)
+    status: CoordinationFindingStatus = CoordinationFindingStatus.open
+    # Stable key used to update/resolve this finding in place across repeated
+    # analysis passes instead of creating duplicates - see app/coordination.py.
+    dedup_key: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class IncidentState(BaseModel):
     """Full snapshot of an incident's current structured picture."""
 
@@ -125,6 +173,7 @@ class IncidentState(BaseModel):
     timeline: list[TimelineEvent] = Field(default_factory=list)
     unresolved_questions: list[UnresolvedQuestion] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
+    coordination_findings: list[CoordinationFinding] = Field(default_factory=list)
 
 
 # --- LLM structured-output schema ----------------------------------------------
@@ -181,6 +230,23 @@ class ConversationAnalysis(BaseModel):
     unresolved_questions: list[ExtractedQuestion] = Field(default_factory=list)
     conflicts: list[ExtractedConflict] = Field(default_factory=list)
     timeline_events: list[ExtractedTimelineEvent] = Field(default_factory=list)
+
+
+# --- Coordination intelligence LLM schema (M4) ----------------------------------
+# Optional, semantic-gap-only layer on top of app/coordination.py's deterministic
+# analysis - see app/coordination.py for the prompt and fail-safe handling.
+
+
+class ExtractedCoordinationGap(BaseModel):
+    title: str
+    description: str
+    severity: str = "medium"  # "low" | "medium" | "high" - validated in app/coordination.py
+
+
+class CoordinationGapAnalysis(BaseModel):
+    """Structured output for the optional missing-information analysis."""
+
+    gaps: list[ExtractedCoordinationGap] = Field(default_factory=list)
 
 
 # --- API request/response schemas -----------------------------------------------

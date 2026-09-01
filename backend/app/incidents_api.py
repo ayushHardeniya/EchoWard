@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from app import incident_db
+from app import coordination, incident_db
 from app.incident_models import (
     ConversationTurnRequest,
     ConversationTurnResponse,
@@ -50,7 +50,10 @@ async def update_incident_status(incident_id: str, body: UpdateIncidentStatusReq
         raise HTTPException(status_code=404, detail=f"Incident not found: {incident_id}")
 
     incident_db.update_incident_status(incident_id, body.status)
-    state = incident_db.get_incident_state(incident_id)
+    # A status change is always a meaningful coordination-relevant event (e.g.
+    # moving to "resolved" doesn't itself resolve open findings, but it's still
+    # worth a fresh checkpoint) - recompute alongside it, same as M3's broadcast.
+    state = await run_in_threadpool(coordination.refresh_coordination_findings, incident_id)
     assert state is not None
     logger.info("Incident status updated: id=%s status=%s", incident_id, body.status.value)
 
@@ -82,7 +85,12 @@ async def post_conversation_turn(incident_id: str, body: ConversationTurnRequest
     # committed) by this point - broadcasting can only ever follow a successful,
     # persisted write, never precede or race it.
     if not result.changes.is_empty:
-        await manager.broadcast_state(incident_id, result.state)
+        # M4: recompute coordination findings over the just-updated state before
+        # broadcasting, so the dashboard and this response agree on what's shown.
+        state = await run_in_threadpool(coordination.refresh_coordination_findings, incident_id)
+        if state is not None:
+            result = result.model_copy(update={"state": state})
+            await manager.broadcast_state(incident_id, state)
 
     return result
 

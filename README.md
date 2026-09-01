@@ -5,17 +5,17 @@ Voice-native AI Incident Commander for the EchoSphere: Agora Conversational AI H
 EchoWard joins a live technical incident room, listens to the conversation, and keeps a
 continuously updated shared picture of the incident — facts, hypotheses, decisions, actions,
 owners, and timeline — while surfacing conflicts and missing information instead of guessing
-at root cause.
-
-See [CLAUDE.md](./CLAUDE.md) for architecture, conventions, and current build status.
+at root cause. On top of that shared picture, EchoWard's coordination-intelligence layer flags
+what the team needs to pay attention to *next*: unresolved conflicts, unowned or stale actions,
+decisions with no tracked follow-up, hypotheses being acted on as if confirmed, and open risks —
+turning "here's what happened" into "here's what needs attention."
 
 ## Repository structure
 
 ```
 echoward/
 ├── backend/     FastAPI + SQLite backend
-├── frontend/    Next.js + TypeScript frontend
-└── CLAUDE.md    Architecture, decisions, status
+└── frontend/    Next.js + TypeScript frontend
 ```
 
 ## Architecture
@@ -30,20 +30,29 @@ Agora RTC Web SDK  ── token/agent ──▶  app/agora.py            ──�
 
 IncidentDashboard  ── conversation ─▶  app/incidents_api.py
   (live UI)                              app/intelligence.py    ──────▶  Gemini (structured
-                   ◀── WS broadcast ──   app/incident_db.py               extraction only)
-                       (state)           app/realtime.py
+                   ◀── WS broadcast ──   app/incident_db.py               extraction, +
+                       (state)           app/realtime.py                 optional coordination
+                                         app/coordination.py              gap-detection)
                                          (SQLite + in-process WebSocket fanout)
 ```
 
-The voice loop (Phase 2) and incident intelligence (M2/M3) are independent backend concerns that
-share one FastAPI process and one SQLite file. A conversation turn can reach the intelligence
-pipeline either directly (`POST /api/incidents/{id}/conversation`, what `IncidentDashboard`'s dev
-control and the tests use) or — once wired up in a real Agora project — via the
-`POST /api/agora/webhook/{incident_id}` adapter. Every meaningful state change (a conversation turn
-that actually extracted something, or a status change) is broadcast over
-`WS /api/incidents/{id}/stream` to every dashboard currently watching that incident. See
-CLAUDE.md's "Incident intelligence (M2)" and "Realtime architecture (M3)" sections for full design
-detail and known gaps.
+The voice loop, incident intelligence, and coordination intelligence are independent backend
+concerns that share one FastAPI process and one SQLite file. A conversation turn can reach the
+intelligence pipeline either directly (`POST /api/incidents/{id}/conversation`, what
+`IncidentDashboard`'s dev control and the tests use) or — once wired up in a real Agora project —
+via the `POST /api/agora/webhook/{incident_id}` adapter. After every meaningful state change (a
+conversation turn that actually extracted something, or a status change), `app/coordination.py`
+re-derives coordination findings from the incident's current structured state — never the raw
+transcript — and the result is broadcast over `WS /api/incidents/{id}/stream` to every dashboard
+watching that incident, alongside the rest of the incident state.
+
+Coordination intelligence is mostly deterministic (conflict surfacing reuses the existing
+Conflict records; unowned/stale actions, decisions without a tracked action, hypotheses being
+acted on as fact, and open questions/risks are all computed directly from timestamps and text
+overlap — no LLM call, always available). One check — semantic "missing information" gaps (e.g.
+"impact is known but affected scope isn't") — optionally calls Gemini with the structured state
+summary (not the transcript) and fails safe to no findings if no `GEMINI_API_KEY` is set, so the
+rest of coordination intelligence works with zero external dependencies.
 
 ## Prerequisites
 
@@ -114,12 +123,13 @@ npm run build
    `backend/.env` as `AGORA_CUSTOMER_ID` / `AGORA_CUSTOMER_SECRET`.
 4. Make sure **Conversational AI Engine** is enabled for the project (Agora may require opting in
    via the Console or CLI: `agora project env --feature convoai`, depending on account type).
-5. Leave the `AGORA_ASR_*` / `AGORA_LLM_*` / `AGORA_TTS_*` variables at their defaults to start —
-   they select Agora's **managed-credential** presets (Deepgram / OpenAI gpt-4o-mini / MiniMax),
-   so no separate Deepgram/OpenAI/MiniMax/Gemini API key is needed for the voice loop itself.
-   If your account's managed-preset catalog differs, `agent/start` will return a `502` with
-   Agora's rejection message in the response `detail` — adjust these vendor/model values to match
-   what's available on your account (see Agora Console > Agent Studio for the current list).
+5. In the Console's **Agent Builder**, publish a Conversational AI pipeline (ASR/LLM/TTS are
+   configured there, using Agora's managed-credential presets — no separate Deepgram/OpenAI/
+   MiniMax/Gemini API key needed). Copy its **pipeline ID** into `backend/.env` as
+   `AGORA_AGENT_PIPELINE_ID`. The published pipeline is the source of truth for the agent's voice
+   behavior — the backend only sends `pipeline_id` plus the RTC channel/token/uid on `agent/start`,
+   it does not duplicate ASR/LLM/TTS config. If the pipeline id is missing or wrong, `agent/start`
+   returns a clear `503`/`502` rather than silently failing.
 6. The frontend needs no separate Agora env var — it gets `app_id` back from the backend's token
    endpoint. Its `.env.local` only needs `NEXT_PUBLIC_API_URL`.
 
@@ -166,6 +176,28 @@ calls, no curl needed.
 Automated tests (`pytest`) exercise the full pipeline — including the exact 5-turn scenario from
 the M2 spec (fact → hypothesis → conflict → decision → action-with-owner) — with the LLM call
 mocked, so `pytest` needs no `GEMINI_API_KEY` either.
+
+## Exercising coordination intelligence
+
+No separate setup needed — it runs automatically after every conversation turn or status change
+that actually changes something. To see it:
+
+1. Open the dashboard, create an incident, and use "Dev: send a test conversation statement" (or
+   `curl` the `/conversation` endpoint, see above) to send a statement that creates an action with
+   no owner, e.g. *"We should roll back the payment service."*
+2. The **Coordination** panel (directly under the incident status, above Facts/Hypotheses) shows a
+   `[HIGH] Action has no owner` finding, plus a compact checkpoint line ("N action(s) open (N
+   unowned)...").
+3. Send a follow-up statement assigning an owner, e.g. as "Bob": *"I'll take the rollback."* The
+   finding disappears from Coordination on the next update — same live WebSocket broadcast as the
+   rest of the dashboard, no manual refresh.
+4. Sending two conflicting statements (see the M2 example above) also produces a `[HIGH]
+   Conflicting reports: ...` coordination finding alongside the existing Conflicts panel — the
+   panels represent the same underlying Conflict record, just surfaced two ways: full detail in
+   Conflicts, an attention-grabbing summary in Coordination.
+
+The optional semantic "missing information" check only fires with a real `GEMINI_API_KEY`
+(same one used for extraction) — without it, every other coordination check above still works.
 
 ## Exercising the live dashboard / realtime updates
 
@@ -223,9 +255,17 @@ a microphone. Manual verification procedure:
 
 ## Known limitations
 
-- The Agora voice integration is implemented against Agora's documented API shapes but has not
-  been exercised against a real Agora account in this environment (managed-preset availability
-  can vary by account, no agent-state persistence across backend restarts, etc.) — see CLAUDE.md.
+- Coordination intelligence's text-matching (linking a decision to its follow-up action, or a
+  hypothesis to a statement acting on it) is a deterministic word-overlap heuristic, not semantic
+  understanding — it catches cases with genuine shared vocabulary (as in the worked payment-outage
+  example) but can miss a connection stated in fully different words, or rarely over-match on
+  incidental shared terms. The one LLM-assisted check (missing-information gaps) was verified
+  reachable the same way the M2 extraction call was (see below) but not verified to produce
+  correct gap analysis against a live Gemini call in this environment.
+- The Agora voice integration is implemented against Agora's documented API shapes and now
+  verified against a real Agora project's published Conversational AI pipeline; there is still no
+  agent-state persistence across backend restarts (stop the agent manually via the Agora Console,
+  or start a fresh one in the same channel, if the backend restarts mid-session).
 - The Gemini extraction call was verified reachable (a deliberately invalid key reached Google's
   server and failed only on auth, confirming the model id/request/schema are structurally
   correct) but never verified to produce a correct extraction, since no real `GEMINI_API_KEY` was
@@ -243,10 +283,10 @@ a microphone. Manual verification procedure:
   design for this MVP, but it means state only fans out to clients connected to *this* backend
   process, and a backend restart drops all live connections (they reconnect and refetch
   automatically, so this is a brief blip, not data loss — SQLite is still the source of truth).
-- The dashboard was verified via `next build`/dev-server HTML output, `pytest`'s WebSocket tests,
-  and a live `uvicorn` + Node `WebSocket` client round trip — not in an actual browser (none
-  available in this environment). Layout/visual behavior should be sanity-checked in a real browser
-  before a live demo.
+- The dashboard (including the M4 Coordination panel) was verified via `next build`/dev-server HTML
+  output, `pytest`'s WebSocket tests, and a live `uvicorn` + Node `WebSocket` client round trip —
+  not in an actual browser (none available in this environment). Layout/visual behavior should be
+  sanity-checked in a real browser before a live demo.
 - Incident status has no transition rules (any status → any other) and no automated triggers —
   it's a direct, human-driven field, not a workflow engine, by design for this milestone.
 - No persistent incident record beyond SQLite, no Slack/Jira/PagerDuty integration, no
@@ -256,11 +296,13 @@ a microphone. Manual verification procedure:
 
 ## Status
 
-Phase 1 (foundation), Phase 2 (Agora voice MVP), Phase 3/M2 (incident intelligence), and Phase
-4/M3 (live incident dashboard) are complete: a runnable Next.js frontend + FastAPI backend with
-SQLite wiring, health check, a working Agora RTC + Conversational AI voice room, a Gemini-backed
-pipeline that turns conversation turns into structured facts/hypotheses/decisions/actions/
-timeline/conflicts, and a WebSocket-driven live dashboard that keeps every connected browser in
-sync with that state — pending live-account verification for the two external integrations
-(Agora, Gemini) as detailed above. Next milestone is M4: coordination intelligence. See CLAUDE.md
-for full details.
+M0 (foundation), M1 (Agora voice MVP), M2 (incident intelligence), M3 (live incident dashboard),
+and M4 (coordination intelligence) are complete: a runnable Next.js frontend + FastAPI backend
+with SQLite wiring, health check, a working Agora RTC + Conversational AI voice room, a
+Gemini-backed pipeline that turns conversation turns into structured facts/hypotheses/decisions/
+actions/timeline/conflicts, a WebSocket-driven live dashboard that keeps every connected browser
+in sync with that state, and a coordination layer that reasons over that state to surface unowned/
+stale actions, decisions without follow-through, hypotheses being treated as fact, unresolved
+risks, and (optionally, with Gemini) semantic information gaps — pending live-account verification
+for the external integrations (Agora, Gemini) as detailed above. Next milestone: tool execution +
+human confirmation (M5), and spoken coordination summaries (M6).

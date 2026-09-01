@@ -77,6 +77,30 @@ export interface Conflict {
   detected_at: string;
 }
 
+export type CoordinationFindingType =
+  | "conflict"
+  | "missing_information"
+  | "unowned_action"
+  | "stale_action"
+  | "decision_followup"
+  | "hypothesis_risk"
+  | "unresolved_risk"
+  | "situational_summary";
+
+export type CoordinationSeverity = "info" | "low" | "medium" | "high";
+
+export interface CoordinationFinding {
+  id: string;
+  type: CoordinationFindingType;
+  severity: CoordinationSeverity;
+  title: string;
+  description: string;
+  related_ids: string[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface IncidentState {
   incident: Incident;
   facts: Fact[];
@@ -86,6 +110,7 @@ export interface IncidentState {
   timeline: TimelineEvent[];
   unresolved_questions: UnresolvedQuestion[];
   conflicts: Conflict[];
+  coordination_findings: CoordinationFinding[];
 }
 
 export interface ConversationTurnResponse {
