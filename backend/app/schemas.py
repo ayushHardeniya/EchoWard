@@ -29,6 +29,10 @@ class RtcTokenResponse(BaseModel):
 
 class StartAgentRequest(BaseModel):
     channel: str = Field(pattern=CHANNEL_NAME_PATTERN)
+    # M6.2: optional link so app/voice.py's proactive interventions know which
+    # live Agora agent to speak through for this incident's coordination
+    # findings - purely additive, agent/start still works without it.
+    incident_id: str | None = None
 
 
 class StartAgentResponse(BaseModel):

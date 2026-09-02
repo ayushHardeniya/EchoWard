@@ -38,6 +38,14 @@ def test_build_agent_join_payload_shape() -> None:
     assert props["agent_rtc_uid"] == "9999"
     assert props["remote_rtc_uids"] == ["*"]
 
+    # M6.1: required for Conversational AI live-transcript delivery over
+    # Signaling (RTM) — see app/agora.py's build_agent_join_payload docstring.
+    assert props["advanced_features"] == {"enable_rtm": True}
+    assert props["parameters"] == {
+        "data_channel": "rtm",
+        "transcript": {"enable": True, "protocol_version": "v2"},
+    }
+
     # ASR/LLM/TTS are supplied by the published Agent Builder pipeline, not
     # duplicated here.
     assert "asr" not in props

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   type Action,
   confirmAction,
@@ -18,10 +18,38 @@ import {
   type TimelineEvent,
   type UnresolvedQuestion,
   updateIncidentStatus,
+  type VoiceIntervention,
 } from "@/lib/incidents-api";
+import type { LiveHumanUtterance } from "@/lib/useAgoraRoom";
 import { type StreamStatus, useIncidentStream } from "@/lib/useIncidentStream";
 
 const LAST_INCIDENT_KEY = "echoward:lastIncidentId";
+
+// useSyncExternalStore (rather than reading localStorage in a lazy useState
+// initializer or a mount effect) is what keeps the very first client render
+// identical to the server-rendered HTML - React deliberately renders
+// getServerSnapshot() during hydration, then re-syncs to the real client
+// snapshot right after, so there's no SSR/CSR mismatch and no need to
+// setState from inside an effect just to mirror an external source.
+const lastIncidentIdListeners = new Set<() => void>();
+
+function subscribeLastIncidentId(listener: () => void) {
+  lastIncidentIdListeners.add(listener);
+  return () => lastIncidentIdListeners.delete(listener);
+}
+
+function getLastIncidentIdSnapshot(): string | null {
+  return localStorage.getItem(LAST_INCIDENT_KEY);
+}
+
+function getLastIncidentIdServerSnapshot(): string | null {
+  return null;
+}
+
+function persistLastIncidentId(id: string) {
+  localStorage.setItem(LAST_INCIDENT_KEY, id);
+  lastIncidentIdListeners.forEach((listener) => listener());
+}
 
 const STATUS_STYLE: Record<IncidentStatus, string> = {
   investigating: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
@@ -82,6 +110,10 @@ function formatRelative(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+function isWithin(iso: string, windowMs: number): boolean {
+  return Date.now() - new Date(iso).getTime() < windowMs;
+}
+
 function useTick(intervalMs: number) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -90,19 +122,27 @@ function useTick(intervalMs: number) {
   }, [intervalMs]);
 }
 
-export default function IncidentDashboard({ titleHint }: { titleHint?: string }) {
-  const [incidentId, setIncidentId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return localStorage.getItem(LAST_INCIDENT_KEY);
-  });
+export default function IncidentDashboard({
+  titleHint,
+  liveUtterance,
+}: {
+  titleHint?: string;
+  liveUtterance?: LiveHumanUtterance | null;
+}) {
+  const storedIncidentId = useSyncExternalStore(
+    subscribeLastIncidentId,
+    getLastIncidentIdSnapshot,
+    getLastIncidentIdServerSnapshot,
+  );
+  // undefined = "no explicit choice this session yet, defer to storedIncidentId";
+  // null = "explicitly closed" (e.g. Change incident), overriding storage.
+  const [sessionIncidentId, setSessionIncidentId] = useState<string | null | undefined>(undefined);
+  const incidentId = sessionIncidentId !== undefined ? sessionIncidentId : storedIncidentId;
+
   const [openIdInput, setOpenIdInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (incidentId) localStorage.setItem(LAST_INCIDENT_KEY, incidentId);
-  }, [incidentId]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -110,7 +150,8 @@ export default function IncidentDashboard({ titleHint }: { titleHint?: string })
     setCreateError(null);
     try {
       const incident = await createIncident(titleInput.trim() || titleHint || "Untitled incident");
-      setIncidentId(incident.id);
+      persistLastIncidentId(incident.id);
+      setSessionIncidentId(incident.id);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : "Failed to create incident");
     } finally {
@@ -120,7 +161,10 @@ export default function IncidentDashboard({ titleHint }: { titleHint?: string })
 
   function handleOpen(e: React.FormEvent) {
     e.preventDefault();
-    if (openIdInput.trim()) setIncidentId(openIdInput.trim());
+    const id = openIdInput.trim();
+    if (!id) return;
+    persistLastIncidentId(id);
+    setSessionIncidentId(id);
   }
 
   if (!incidentId) {
@@ -174,19 +218,47 @@ export default function IncidentDashboard({ titleHint }: { titleHint?: string })
     );
   }
 
-  return <DashboardView incidentId={incidentId} onChangeIncident={() => setIncidentId(null)} />;
+  return (
+    <DashboardView
+      incidentId={incidentId}
+      onChangeIncident={() => setSessionIncidentId(null)}
+      liveUtterance={liveUtterance}
+    />
+  );
 }
 
 function DashboardView({
   incidentId,
   onChangeIncident,
+  liveUtterance,
 }: {
   incidentId: string;
   onChangeIncident: () => void;
+  liveUtterance?: LiveHumanUtterance | null;
 }) {
   const { state, status, error } = useIncidentStream(incidentId);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [liveTranscriptError, setLiveTranscriptError] = useState<string | null>(null);
   useTick(5000); // refresh "last updated" / connection-relative text periodically
+
+  // M6.1: submit each finalized human utterance from the live Agora room to
+  // the same conversation endpoint the dev control below uses. A submission
+  // failure is logged and surfaced quietly here - it must never interrupt the
+  // Agora room itself (see frontend/src/lib/useAgoraRoom.ts, liveTranscript.ts).
+  useEffect(() => {
+    if (!liveUtterance) return;
+    console.log("[live-transcript] submitting utterance to incident intelligence", liveUtterance);
+    sendConversationTurn(incidentId, "Participant", liveUtterance.text)
+      .then(() => {
+        console.log("[live-transcript] utterance submitted successfully", liveUtterance.id);
+        setLiveTranscriptError(null);
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "Failed to submit live transcript";
+        console.error("[live-transcript] failed to submit utterance to incident intelligence", err);
+        setLiveTranscriptError(message);
+      });
+  }, [liveUtterance, incidentId]);
 
   async function handleStatusChange(next: IncidentStatus) {
     setStatusError(null);
@@ -255,11 +327,15 @@ function DashboardView({
         </div>
       </div>
 
-      {(error || statusError) && (
+      {(error || statusError || liveTranscriptError) && (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-          {error ?? statusError}
+          {error ?? statusError ?? liveTranscriptError}
         </div>
       )}
+
+      {/* EchoWard's last proactive voice intervention (M6.2) — a lightweight
+          "it just spoke" indicator, not a transcript/history panel. */}
+      <VoiceInterventionBanner intervention={state.last_voice_intervention} />
 
       {/* Coordination — what the team needs to pay attention to next (M4) */}
       <CoordinationPanel findings={state.coordination_findings} />
@@ -389,6 +465,27 @@ function DashboardView({
 
       <DevConversationControl incidentId={incidentId} />
     </section>
+  );
+}
+
+const VOICE_INTERVENTION_RECENCY_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Lightweight "EchoWard just said..." indicator (M6.2) — hidden once the
+
+ * last proactive intervention is no longer recent, and hidden entirely for a
+ * fresh incident with no voice history yet.
+ */
+function VoiceInterventionBanner({ intervention }: { intervention: VoiceIntervention | null }) {
+  if (!intervention) return null;
+  if (!isWithin(intervention.spoken_at, VOICE_INTERVENTION_RECENCY_MS)) return null;
+
+  return (
+    <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm dark:border-indigo-900 dark:bg-indigo-950/40">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500 dark:text-indigo-400">
+        EchoWard spoke {formatRelative(intervention.spoken_at)}
+      </p>
+      <p className="mt-0.5 text-indigo-900 dark:text-indigo-200">&ldquo;{intervention.message}&rdquo;</p>
+    </div>
   );
 }
 

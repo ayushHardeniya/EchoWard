@@ -115,6 +115,15 @@ export interface CoordinationFinding {
   updated_at: string;
 }
 
+export interface VoiceIntervention {
+  id: string;
+  incident_id: string;
+  dedup_key: string;
+  message: string;
+  success: boolean;
+  spoken_at: string;
+}
+
 export interface IncidentState {
   incident: Incident;
   facts: Fact[];
@@ -125,6 +134,7 @@ export interface IncidentState {
   unresolved_questions: UnresolvedQuestion[];
   conflicts: Conflict[];
   coordination_findings: CoordinationFinding[];
+  last_voice_intervention: VoiceIntervention | null;
 }
 
 export interface ConversationTurnResponse {

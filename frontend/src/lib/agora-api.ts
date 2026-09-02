@@ -42,8 +42,12 @@ export function fetchRtcToken(
   return postJson<RtcTokenResponse>("/api/agora/token", { channel, uid, role });
 }
 
-export function startAgoraAgent(channel: string): Promise<StartAgentResponse> {
-  return postJson<StartAgentResponse>("/api/agora/agent/start", { channel });
+export function startAgoraAgent(channel: string, incidentId?: string | null): Promise<StartAgentResponse> {
+  // M6.2: incidentId (when known) links this Agora agent to an incident so
+  // the backend's proactive voice interventions (app/voice.py) know which
+  // live agent to speak through - purely additive, agent start still works
+  // without it.
+  return postJson<StartAgentResponse>("/api/agora/agent/start", { channel, incident_id: incidentId ?? null });
 }
 
 export function stopAgoraAgent(agentId: string): Promise<StopAgentResponse> {

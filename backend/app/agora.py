@@ -4,6 +4,7 @@ import secrets
 import httpx
 from fastapi import APIRouter, HTTPException
 
+from app import voice
 from app.config import Settings, get_settings
 from app.schemas import (
     RtcTokenRequest,
@@ -27,16 +28,32 @@ def build_rtc_token(
     role: str,
     expire_seconds: int,
 ) -> str:
-    """Build an Agora AccessToken2 RTC token. Raises ValueError on bad inputs."""
+    """Build an Agora AccessToken2 token carrying both RTC and RTM (Signaling)
+    privileges for the given uid.
+
+    RTM privileges are required for Agora's Conversational AI live-transcript
+    feature (M6.1) — transcripts are delivered over Signaling, not the RTC
+    data-stream channel, per Agora's Conversational AI docs. `uid` is passed
+    as a string to `build_token_with_rtm`: this is a no-op for the RTC service
+    (ServiceRtc normalizes to `str(uid)` internally either way — see
+    app/vendor/agora_token2/AccessToken2.py — so this is not a behavior change
+    for RTC-only callers), but required for the RTM service, which calls
+    `.encode()` directly on whatever it's given and would raise on an int.
+
+    One token, one Agora API call — no separate RTM token/fetch needed, since
+    AccessToken2 embeds multiple service privileges in a single signed token.
+
+    Raises ValueError on bad inputs.
+    """
     rtc_role = Role_Publisher if role == "publisher" else Role_Subscriber
-    token = RtcTokenBuilder.build_token_with_uid(
-        app_id, app_certificate, channel, uid, rtc_role, expire_seconds, expire_seconds
+    token = RtcTokenBuilder.build_token_with_rtm(
+        app_id, app_certificate, channel, str(uid), rtc_role, expire_seconds, expire_seconds
     )
     if not token:
         # The vendored builder returns "" instead of raising when app_id/app_certificate
         # aren't well-formed (Agora issues 32-char hex values for both).
         raise ValueError(
-            "Failed to build Agora RTC token — AGORA_APP_ID/AGORA_APP_CERTIFICATE are "
+            "Failed to build Agora RTC/RTM token — AGORA_APP_ID/AGORA_APP_CERTIFICATE are "
             "missing or malformed (expected 32-character hex strings)."
         )
     return token
@@ -49,6 +66,22 @@ def build_agent_join_payload(
 
     ASR/LLM/TTS are supplied by the published Agent Builder pipeline
     (`pipeline_id`, top-level per the current API), not duplicated here.
+
+    `advanced_features.enable_rtm` + `parameters.data_channel: "rtm"` (M6.1):
+    required by Agora's Conversational AI docs for live-transcript delivery —
+    without them the agent has no reason to publish transcripts anywhere, and
+    the Console-published pipeline (ASR/LLM/TTS) is otherwise untouched by
+    this. `agent_token` must already carry RTM privileges for this to work —
+    see `build_rtc_token`, which is the only place this argument is produced.
+
+    `parameters.transcript.enable: true` + `protocol_version: "v2"`: the
+    `data_channel: "rtm"` setting alone only routes transcript delivery onto
+    Signaling — it does not itself turn transcription on, and omitting the
+    protocol version leaves the agent on whatever the API's default is. Both
+    are required by the current Conversational AI join API to reliably get
+    `user_transcription`/`assistant_transcription` RTM messages at all; their
+    absence was the most likely cause of the previously-unreliable transcript
+    delivery this milestone was fixing.
     """
     return {
         "name": f"echoward-{channel}-{secrets.token_hex(4)}",
@@ -59,6 +92,11 @@ def build_agent_join_payload(
             "agent_rtc_uid": str(agent_uid),
             "remote_rtc_uids": ["*"],
             "idle_timeout": 120,
+            "advanced_features": {"enable_rtm": True},
+            "parameters": {
+                "data_channel": "rtm",
+                "transcript": {"enable": True, "protocol_version": "v2"},
+            },
         },
     }
 
@@ -163,6 +201,10 @@ async def start_agent(body: StartAgentRequest) -> StartAgentResponse:
     logger.info(
         "EchoWard agent started: agent_id=%s channel=%s", data.get("agent_id"), body.channel
     )
+    if body.incident_id:
+        # M6.2: register this incident<->agent link so app/voice.py knows which
+        # live agent to speak through for this incident's coordination findings.
+        voice.register_agent(body.incident_id, data["agent_id"])
     return StartAgentResponse(
         agent_id=data["agent_id"],
         channel=body.channel,
@@ -206,5 +248,6 @@ async def stop_agent(body: StopAgentRequest) -> StopAgentResponse:
             status_code=502, detail=f"Could not reach Agora Conversational AI API: {exc}"
         ) from exc
 
+    voice.unregister_agent(body.agent_id)
     logger.info("EchoWard agent stopped: agent_id=%s", body.agent_id)
     return StopAgentResponse(agent_id=body.agent_id, status="STOPPED")

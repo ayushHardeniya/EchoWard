@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.agora import build_rtc_token
 from app.main import app
+from app.vendor.agora_token2.AccessToken2 import AccessToken, ServiceRtc, ServiceRtm
 
 client = TestClient(app)
 
@@ -18,6 +19,27 @@ def test_build_rtc_token_produces_a_token() -> None:
     )
     assert token.startswith("007")  # AccessToken2 version prefix
     assert len(token) > 20
+
+
+def test_build_rtc_token_grants_both_rtc_and_rtm_privileges() -> None:
+    """M6.1: live transcript delivery requires the token to carry an RTM
+    (Signaling) login privilege alongside the existing RTC one — verified by
+    actually parsing the built token back, not just checking it's non-empty.
+    """
+    token = build_rtc_token(
+        app_id="a" * 32,
+        app_certificate="b" * 32,
+        channel="incident-room",
+        uid=12345,
+        role="publisher",
+        expire_seconds=3600,
+    )
+
+    parsed = AccessToken()
+    assert parsed.from_string(token) is True
+
+    service_types = {service.service_type() for service in parsed.services}
+    assert service_types == {ServiceRtc.kServiceType, ServiceRtm.kServiceType}
 
 
 def test_build_rtc_token_rejects_malformed_credentials() -> None:

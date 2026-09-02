@@ -161,7 +161,7 @@ export default function Home() {
         </div>
       )}
 
-      <IncidentDashboard titleHint={room.channel ?? undefined} />
+      <IncidentDashboard titleHint={room.channel ?? undefined} liveUtterance={room.lastHumanUtterance} />
     </main>
   );
 }

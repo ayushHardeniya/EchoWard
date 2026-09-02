@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from app import actions, coordination, incident_db, tools
+from app import actions, coordination, incident_db, tools, voice
 from app.incident_models import (
     ConfirmActionRequest,
     ConversationTurnRequest,
@@ -21,6 +21,23 @@ from app.realtime import manager
 logger = logging.getLogger("echoward.incidents")
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
+
+
+async def _rebroadcast_if_spoke(incident_id: str, state: IncidentState, spoke: bool) -> IncidentState:
+    """M6.2: a spoken intervention changes IncidentState.last_voice_intervention,
+
+    which the caller's already-sent broadcast/response predates - refetch and
+    broadcast once more so the dashboard's "EchoWard just said..." indicator
+    updates live, same as any other state change. A no-op when nothing was
+    actually spoken.
+    """
+    if not spoke:
+        return state
+    fresh_state = await run_in_threadpool(incident_db.get_incident_state, incident_id)
+    if fresh_state is None:
+        return state
+    await manager.broadcast_state(incident_id, fresh_state)
+    return fresh_state
 
 
 @router.post("", response_model=Incident, status_code=201)
@@ -94,6 +111,17 @@ async def post_conversation_turn(incident_id: str, body: ConversationTurnRequest
             result = result.model_copy(update={"state": state})
             await manager.broadcast_state(incident_id, state)
 
+    # M6.2: a status request ("EchoWard, what's the status?") typically
+    # extracts no new fact/action, so this must run regardless of
+    # changes.is_empty above - it's checked first and, if it fires, skips the
+    # proactive check below so a single turn never triggers two interventions.
+    spoke = await run_in_threadpool(voice.maybe_answer_status_request, incident_id, result.state, body.text)
+    if not spoke:
+        spoke = await run_in_threadpool(voice.maybe_intervene, incident_id, result.state)
+    state = await _rebroadcast_if_spoke(incident_id, result.state, spoke)
+    if spoke:
+        result = result.model_copy(update={"state": state})
+
     return result
 
 
@@ -119,6 +147,12 @@ async def prepare_action(incident_id: str, action_id: str, body: PrepareActionRe
 
     logger.info("Action prepared: incident=%s action=%s type=%s", incident_id, action_id, body.action_type)
     await manager.broadcast_state(incident_id, state)
+
+    # M6.2: a freshly prepared action is exactly the "decision/action
+    # checkpoint" moment the voice layer should announce - state already
+    # carries the resulting action_awaiting_confirmation finding.
+    spoke = await run_in_threadpool(voice.maybe_intervene, incident_id, state)
+    state = await _rebroadcast_if_spoke(incident_id, state, spoke)
     return state
 
 
@@ -144,6 +178,15 @@ async def confirm_action(incident_id: str, action_id: str, body: ConfirmActionRe
 
     logger.info("Action confirmed and executed: incident=%s action=%s", incident_id, action_id)
     await manager.broadcast_state(incident_id, state)
+
+    # M6.2: announce the result of an action a human just confirmed - the
+    # execution boundary itself (tools.default_adapter.execute) already ran
+    # inside confirm_and_execute_action above; this only ever narrates the
+    # outcome, never triggers or gates it.
+    executed_action = next((a for a in state.actions if a.id == action_id), None)
+    if executed_action is not None:
+        spoke = await run_in_threadpool(voice.announce_action_result, incident_id, executed_action)
+        state = await _rebroadcast_if_spoke(incident_id, state, spoke)
     return state
 
 

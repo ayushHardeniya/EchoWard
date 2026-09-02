@@ -194,6 +194,25 @@ class CoordinationFinding(BaseModel):
     updated_at: datetime
 
 
+class VoiceIntervention(BaseModel):
+    """A proactive spoken message EchoWard sent into the live voice room (M6.2)
+
+    via Agora's `/speak` REST API — advisory only, never an executed action.
+    Persisted so the intervention layer can dedupe (by `dedup_key`, the same
+    CoordinationFinding.dedup_key that triggered it, or a synthetic one for
+    status requests/action results) and debounce across conversation turns,
+    and so the dashboard can show a lightweight "EchoWard just said X"
+    indicator. See app/voice.py.
+    """
+
+    id: str
+    incident_id: str
+    dedup_key: str
+    message: str
+    success: bool
+    spoken_at: datetime
+
+
 class IncidentState(BaseModel):
     """Full snapshot of an incident's current structured picture."""
 
@@ -206,6 +225,9 @@ class IncidentState(BaseModel):
     unresolved_questions: list[UnresolvedQuestion] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
     coordination_findings: list[CoordinationFinding] = Field(default_factory=list)
+    # Most recent successfully-spoken voice intervention, if any - see
+    # VoiceIntervention above and app/voice.py.
+    last_voice_intervention: VoiceIntervention | None = None
 
 
 # --- LLM structured-output schema ----------------------------------------------

@@ -25,6 +25,7 @@ from app.incident_models import (
     TimelineEvent,
     ToolResult,
     UnresolvedQuestion,
+    VoiceIntervention,
 )
 
 SCHEMA = """
@@ -114,6 +115,16 @@ CREATE TABLE IF NOT EXISTS coordination_findings (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    UNIQUE (incident_id, dedup_key)
+);
+
+CREATE TABLE IF NOT EXISTS voice_interventions (
+    id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL REFERENCES incidents(id),
+    dedup_key TEXT NOT NULL,
+    message TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    spoken_at TEXT NOT NULL,
     UNIQUE (incident_id, dedup_key)
 );
 """
@@ -741,6 +752,81 @@ def list_open_coordination_findings(incident_id: str) -> list[CoordinationFindin
     return [_row_to_coordination_finding(r) for r in rows]
 
 
+# --- Voice interventions (M6.2) -----------------------------------------------
+# See app/voice.py for the eligibility/cooldown/message-generation layer that
+# writes these - this module only knows how to persist/read what it's given,
+# same split as coordination_findings above.
+
+
+def insert_voice_intervention(
+    conn: sqlite3.Connection, incident_id: str, dedup_key: str, message: str, success: bool, when: datetime
+) -> VoiceIntervention:
+    intervention = VoiceIntervention(
+        id=_new_id(), incident_id=incident_id, dedup_key=dedup_key, message=message, success=success, spoken_at=when
+    )
+    conn.execute(
+        "INSERT INTO voice_interventions (id, incident_id, dedup_key, message, success, spoken_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (intervention.id, incident_id, dedup_key, message, 1 if success else 0, _iso(when)),
+    )
+    return intervention
+
+
+def has_spoken(incident_id: str, dedup_key: str) -> bool:
+    """Whether EchoWard has already attempted this exact dedup_key (regardless
+
+    of whether the Agora call itself succeeded) - the duplicate-suppression
+    half of M6.2's eligibility check, so a persistently-open finding is never
+    retried on every subsequent turn once EchoWard has already brought it up.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM voice_interventions WHERE incident_id = ? AND dedup_key = ?", (incident_id, dedup_key)
+        ).fetchone()
+    return row is not None
+
+
+def last_voice_intervention_at(incident_id: str) -> datetime | None:
+    """Timestamp of the most recent attempted intervention (successful or
+
+    not) - the cooldown clock. See app/voice.py.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT spoken_at FROM voice_interventions WHERE incident_id = ? ORDER BY spoken_at DESC LIMIT 1",
+            (incident_id,),
+        ).fetchone()
+    return datetime.fromisoformat(row[0]) if row else None
+
+
+def _row_to_voice_intervention(row: sqlite3.Row) -> VoiceIntervention:
+    return VoiceIntervention(
+        id=row["id"],
+        incident_id=row["incident_id"],
+        dedup_key=row["dedup_key"],
+        message=row["message"],
+        success=bool(row["success"]),
+        spoken_at=datetime.fromisoformat(row["spoken_at"]),
+    )
+
+
+def get_latest_voice_intervention(incident_id: str) -> VoiceIntervention | None:
+    """Most recent successfully-spoken intervention, for the dashboard's
+
+    lightweight "EchoWard just said..." indicator. A failed attempt was never
+    actually heard in the room, so it's excluded here - though it's still
+    accounted for by has_spoken/last_voice_intervention_at above, so a
+    repeatedly-failing Agora call doesn't retry-storm every turn.
+    """
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM voice_interventions WHERE incident_id = ? AND success = 1 ORDER BY spoken_at DESC LIMIT 1",
+            (incident_id,),
+        ).fetchone()
+    return _row_to_voice_intervention(row) if row else None
+
+
 # --- Full state --------------------------------------------------------------------
 
 
@@ -758,4 +844,5 @@ def get_incident_state(incident_id: str) -> IncidentState | None:
         unresolved_questions=list_questions(incident_id),
         conflicts=list_conflicts(incident_id),
         coordination_findings=list_open_coordination_findings(incident_id),
+        last_voice_intervention=get_latest_voice_intervention(incident_id),
     )
