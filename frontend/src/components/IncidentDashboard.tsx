@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import {
   type Action,
   confirmAction,
   type Conflict,
   type CoordinationFinding,
   type CoordinationSeverity,
-  createIncident,
   type Decision,
   type Fact,
   type Hypothesis,
@@ -20,36 +19,10 @@ import {
   updateIncidentStatus,
   type VoiceIntervention,
 } from "@/lib/incidents-api";
-import type { LiveHumanUtterance } from "@/lib/useAgoraRoom";
+import type { AgentStatus, useAgoraRoom } from "@/lib/useAgoraRoom";
 import { type StreamStatus, useIncidentStream } from "@/lib/useIncidentStream";
 
-const LAST_INCIDENT_KEY = "echoward:lastIncidentId";
-
-// useSyncExternalStore (rather than reading localStorage in a lazy useState
-// initializer or a mount effect) is what keeps the very first client render
-// identical to the server-rendered HTML - React deliberately renders
-// getServerSnapshot() during hydration, then re-syncs to the real client
-// snapshot right after, so there's no SSR/CSR mismatch and no need to
-// setState from inside an effect just to mirror an external source.
-const lastIncidentIdListeners = new Set<() => void>();
-
-function subscribeLastIncidentId(listener: () => void) {
-  lastIncidentIdListeners.add(listener);
-  return () => lastIncidentIdListeners.delete(listener);
-}
-
-function getLastIncidentIdSnapshot(): string | null {
-  return localStorage.getItem(LAST_INCIDENT_KEY);
-}
-
-function getLastIncidentIdServerSnapshot(): string | null {
-  return null;
-}
-
-function persistLastIncidentId(id: string) {
-  localStorage.setItem(LAST_INCIDENT_KEY, id);
-  lastIncidentIdListeners.forEach((listener) => listener());
-}
+type Room = ReturnType<typeof useAgoraRoom>;
 
 const STATUS_STYLE: Record<IncidentStatus, string> = {
   investigating: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
@@ -95,6 +68,63 @@ const STREAM_STYLE: Record<StreamStatus, { label: string; dot: string }> = {
   disconnected: { label: "Disconnected", dot: "bg-red-500" },
 };
 
+const VOICE_CONNECTION_LABEL: Record<string, string> = {
+  DISCONNECTED: "Not joined",
+  CONNECTING: "Connecting…",
+  CONNECTED: "Joined",
+  RECONNECTING: "Reconnecting…",
+  DISCONNECTING: "Leaving…",
+};
+
+const ECHOWARD_BADGE: Record<AgentStatus, { label: string; className: string }> = {
+  idle: { label: "EchoWard idle", className: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300" },
+  starting: {
+    label: "EchoWard starting…",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  },
+  running: {
+    label: "EchoWard listening",
+    className: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  },
+  stopping: {
+    label: "EchoWard stopping…",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  },
+  error: { label: "EchoWard error", className: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" },
+};
+
+// Timeline events are written by the backend as short, prefixed sentences
+// (see backend/app/intelligence.py's _log_event calls) - recognizing the
+// known prefixes lets the dashboard show a compact type tag instead of the
+// raw "Fact reported: ..." wording. Anything that doesn't match a known
+// prefix (e.g. an owner-assignment note) just falls back to plain text.
+const TIMELINE_TAGS: { prefix: string; label: string; className: string }[] = [
+  { prefix: "Fact reported: ", label: "FACT", className: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
+  {
+    prefix: "Hypothesis proposed: ",
+    label: "HYPOTHESIS",
+    className: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
+  },
+  { prefix: "Decision: ", label: "DECISION", className: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200" },
+  { prefix: "Action: ", label: "ACTION", className: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200" },
+  {
+    prefix: "Conflicting information: ",
+    label: "CONFLICT",
+    className: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  },
+  {
+    prefix: "Open question: ",
+    label: "QUESTION",
+    className: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  },
+];
+
+function formatTimelineEvent(event: string): { tag: string; className: string; text: string } | null {
+  const match = TIMELINE_TAGS.find((t) => event.startsWith(t.prefix));
+  if (!match) return null;
+  return { tag: match.label, className: match.className, text: event.slice(match.prefix.length) };
+}
+
 function formatClock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -123,136 +153,35 @@ function useTick(intervalMs: number) {
 }
 
 export default function IncidentDashboard({
-  titleHint,
-  liveUtterance,
-}: {
-  titleHint?: string;
-  liveUtterance?: LiveHumanUtterance | null;
-}) {
-  const storedIncidentId = useSyncExternalStore(
-    subscribeLastIncidentId,
-    getLastIncidentIdSnapshot,
-    getLastIncidentIdServerSnapshot,
-  );
-  // undefined = "no explicit choice this session yet, defer to storedIncidentId";
-  // null = "explicitly closed" (e.g. Change incident), overriding storage.
-  const [sessionIncidentId, setSessionIncidentId] = useState<string | null | undefined>(undefined);
-  const incidentId = sessionIncidentId !== undefined ? sessionIncidentId : storedIncidentId;
-
-  const [openIdInput, setOpenIdInput] = useState("");
-  const [titleInput, setTitleInput] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setCreating(true);
-    setCreateError(null);
-    try {
-      const incident = await createIncident(titleInput.trim() || titleHint || "Untitled incident");
-      persistLastIncidentId(incident.id);
-      setSessionIncidentId(incident.id);
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Failed to create incident");
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  function handleOpen(e: React.FormEvent) {
-    e.preventDefault();
-    const id = openIdInput.trim();
-    if (!id) return;
-    persistLastIncidentId(id);
-    setSessionIncidentId(id);
-  }
-
-  if (!incidentId) {
-    return (
-      <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-        <div>
-          <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Incident Command</h2>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Create a new incident, or open one that&rsquo;s already running (paste its id — useful for
-            watching the same incident update live from a second browser tab).
-          </p>
-        </div>
-
-        {createError && (
-          <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-            {createError}
-          </div>
-        )}
-
-        <form onSubmit={handleCreate} className="flex gap-2">
-          <input
-            className="flex-1 rounded-md border border-zinc-300 bg-transparent px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
-            value={titleInput}
-            onChange={(e) => setTitleInput(e.target.value)}
-            placeholder={titleHint ? `Incident title (e.g. ${titleHint})` : "Incident title"}
-          />
-          <button
-            type="submit"
-            disabled={creating}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            Create Incident
-          </button>
-        </form>
-
-        <form onSubmit={handleOpen} className="flex gap-2">
-          <input
-            className="flex-1 rounded-md border border-zinc-300 bg-transparent px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
-            value={openIdInput}
-            onChange={(e) => setOpenIdInput(e.target.value)}
-            placeholder="Or paste an existing incident id"
-          />
-          <button
-            type="submit"
-            className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
-          >
-            Open
-          </button>
-        </form>
-      </section>
-    );
-  }
-
-  return (
-    <DashboardView
-      incidentId={incidentId}
-      onChangeIncident={() => setSessionIncidentId(null)}
-      liveUtterance={liveUtterance}
-    />
-  );
-}
-
-function DashboardView({
   incidentId,
+  room,
+  displayName,
   onChangeIncident,
-  liveUtterance,
+  onJoinVoice,
 }: {
   incidentId: string;
+  room: Room;
+  displayName: string;
   onChangeIncident: () => void;
-  liveUtterance?: LiveHumanUtterance | null;
+  onJoinVoice: () => void;
 }) {
   const { state, status, error } = useIncidentStream(incidentId);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [liveTranscriptError, setLiveTranscriptError] = useState<string | null>(null);
-  useTick(5000); // refresh "last updated" / connection-relative text periodically
+  const [codeCopied, setCodeCopied] = useState(false);
+  useTick(5000); // refresh "just spoke Xm ago" / connection-relative text periodically
+
+  const liveUtterance = room.lastHumanUtterance;
 
   // M6.1: submit each finalized human utterance from the live Agora room to
-  // the same conversation endpoint the dev control below uses. A submission
-  // failure is logged and surfaced quietly here - it must never interrupt the
-  // Agora room itself (see frontend/src/lib/useAgoraRoom.ts, liveTranscript.ts).
+  // the same conversation endpoint the incident intelligence pipeline uses.
+  // A submission failure is logged and surfaced quietly here - it must never
+  // interrupt the Agora room itself (see frontend/src/lib/useAgoraRoom.ts,
+  // liveTranscript.ts).
   useEffect(() => {
     if (!liveUtterance) return;
-    console.log("[live-transcript] submitting utterance to incident intelligence", liveUtterance);
     sendConversationTurn(incidentId, "Participant", liveUtterance.text)
-      .then(() => {
-        console.log("[live-transcript] utterance submitted successfully", liveUtterance.id);
-        setLiveTranscriptError(null);
-      })
+      .then(() => setLiveTranscriptError(null))
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Failed to submit live transcript";
         console.error("[live-transcript] failed to submit utterance to incident intelligence", err);
@@ -269,12 +198,23 @@ function DashboardView({
     }
   }
 
+  async function handleCopyCode() {
+    try {
+      await navigator.clipboard.writeText(incidentId);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    } catch {
+      // Clipboard access can fail (permissions, insecure context) - not
+      // worth surfacing as an error, the user can still share manually.
+    }
+  }
+
   if (error && !state) {
     return (
       <section className="rounded-lg border border-red-300 bg-red-50 p-6 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-        Could not load incident {incidentId}: {error}
+        Could not load this incident: {error}
         <button onClick={onChangeIncident} className="ml-2 underline">
-          Choose a different incident
+          Start over
         </button>
       </section>
     );
@@ -290,23 +230,31 @@ function DashboardView({
 
   const { incident } = state;
   const streamStyle = STREAM_STYLE[status];
+  const echoward = ECHOWARD_BADGE[room.agentStatus];
+  const voiceJoined = room.channel !== null;
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-      {/* Header / overview */}
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+      {/* Header: incident identity + live/EchoWard/status state */}
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
         <div>
           <p className="text-xs font-semibold tracking-wide text-zinc-400 dark:text-zinc-500">
             ECHOWARD · AI INCIDENT COMMANDER
           </p>
           <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">{incident.title}</h2>
-          <p className="mt-1 font-mono text-xs text-zinc-400 dark:text-zinc-500">#{incident.id}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+              <span className={`h-1.5 w-1.5 rounded-full ${streamStyle.dot}`} />
+              {streamStyle.label}
+            </span>
+            <span
+              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${echoward.className}`}
+            >
+              {echoward.label}
+            </span>
+          </div>
         </div>
         <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${streamStyle.dot}`} />
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">{streamStyle.label}</span>
-          </div>
           <select
             value={incident.status}
             onChange={(e) => handleStatusChange(e.target.value as IncidentStatus)}
@@ -318,12 +266,15 @@ function DashboardView({
               </option>
             ))}
           </select>
-          <p className="text-xs text-zinc-400 dark:text-zinc-500">
-            Updated {formatRelative(incident.updated_at)}
-          </p>
-          <button onClick={onChangeIncident} className="text-xs text-zinc-400 underline dark:text-zinc-500">
-            Change incident
-          </button>
+          <div className="flex items-center gap-2 text-xs text-zinc-400 dark:text-zinc-500">
+            <button onClick={handleCopyCode} className="underline">
+              {codeCopied ? "Code copied" : "Copy incident code"}
+            </button>
+            <span>·</span>
+            <button onClick={onChangeIncident} className="underline">
+              Change incident
+            </button>
+          </div>
         </div>
       </div>
 
@@ -332,6 +283,44 @@ function DashboardView({
           {error ?? statusError ?? liveTranscriptError}
         </div>
       )}
+
+      {/* Voice room: who's on the call and the mic/EchoWard controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800/40">
+        <div>
+          {voiceJoined ? (
+            <ParticipantsSummary room={room} displayName={displayName} />
+          ) : (
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              Voice room {(VOICE_CONNECTION_LABEL[room.connectionState] ?? "not joined").toLowerCase()}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {voiceJoined ? (
+            <>
+              <SmallButton onClick={() => room.toggleMute()}>{room.isMuted ? "Unmute" : "Mute"}</SmallButton>
+              {room.agentStatus === "idle" || room.agentStatus === "error" ? (
+                <SmallButton emphasis="positive" onClick={() => room.startEchoWard()}>
+                  Start EchoWard
+                </SmallButton>
+              ) : (
+                <SmallButton
+                  emphasis="negative"
+                  onClick={() => room.stopEchoWard()}
+                  disabled={room.agentStatus === "stopping" || room.agentStatus === "starting"}
+                >
+                  Stop EchoWard
+                </SmallButton>
+              )}
+              <SmallButton onClick={() => room.leave()}>Leave voice</SmallButton>
+            </>
+          ) : (
+            <SmallButton emphasis="positive" onClick={onJoinVoice}>
+              Join voice
+            </SmallButton>
+          )}
+        </div>
+      </div>
 
       {/* EchoWard's last proactive voice intervention (M6.2) — a lightweight
           "it just spoke" indicator, not a transcript/history panel. */}
@@ -376,11 +365,7 @@ function DashboardView({
       </div>
 
       {/* Conflicts — full width, deliberately prominent */}
-      <Panel
-        title="Conflicts"
-        badge="UNRESOLVED"
-        badgeClass="bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
-      >
+      <Panel title="Conflicts" badge="UNRESOLVED" badgeClass="bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300">
         {state.conflicts.length === 0 && <Empty text="No conflicting information reported." />}
         <ul className="flex flex-col gap-2">
           {state.conflicts.map((c: Conflict) => (
@@ -388,19 +373,24 @@ function DashboardView({
               key={c.id}
               className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm dark:border-red-900 dark:bg-red-950/40"
             >
-              <div className="flex items-center justify-between">
-                <p className="font-medium text-red-900 dark:text-red-200">! {c.topic}</p>
-                <span className="text-xs uppercase text-red-700 dark:text-red-400">{c.status}</span>
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium text-red-900 dark:text-red-200">{c.topic}</p>
+                <span className="shrink-0 text-xs font-semibold uppercase text-red-700 dark:text-red-400">
+                  {c.status}
+                </span>
               </div>
-              <ul className="mt-1 flex flex-col gap-1">
+              <ul className="mt-1.5 flex flex-col gap-1">
                 {c.statements.map((s, i) => (
-                  <li key={i} className="text-red-800 dark:text-red-300">
-                    <span className="font-medium">{s.source}:</span> &ldquo;{s.statement}&rdquo;
+                  <li key={i} className="rounded bg-white/60 px-2 py-1 text-red-800 dark:bg-red-950/30 dark:text-red-300">
+                    <span className="mr-1 font-medium">{s.source}:</span>
+                    <span className="line-clamp-2" title={s.statement}>
+                      &ldquo;{s.statement}&rdquo;
+                    </span>
                   </li>
                 ))}
               </ul>
-              <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                Surfaced for humans to resolve — EchoWard does not decide who is right.
+              <p className="mt-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+                Human resolution required — EchoWard has not decided who is right.
               </p>
             </li>
           ))}
@@ -436,18 +426,28 @@ function DashboardView({
       {/* Timeline */}
       <Panel title="Timeline">
         {state.timeline.length === 0 && <Empty text="Nothing logged yet." />}
-        <ul className="flex flex-col gap-1">
+        <ul className="flex flex-col gap-1.5">
           {[...state.timeline]
             .reverse()
-            .map((t: TimelineEvent) => (
-              <li key={t.id} className="flex gap-3 text-sm">
-                <span className="w-14 shrink-0 font-mono text-xs text-zinc-400 dark:text-zinc-500">
-                  {formatClock(t.timestamp)}
-                </span>
-                <span className="text-zinc-800 dark:text-zinc-200">{t.event}</span>
-                <span className="text-xs text-zinc-400 dark:text-zinc-500">— {t.source}</span>
-              </li>
-            ))}
+            .map((t: TimelineEvent) => {
+              const tag = formatTimelineEvent(t.event);
+              return (
+                <li key={t.id} className="flex items-start gap-2 text-sm">
+                  <span className="mt-0.5 w-14 shrink-0 font-mono text-xs text-zinc-400 dark:text-zinc-500">
+                    {formatClock(t.timestamp)}
+                  </span>
+                  {tag && (
+                    <span
+                      className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${tag.className}`}
+                    >
+                      {tag.tag}
+                    </span>
+                  )}
+                  <span className="text-zinc-800 dark:text-zinc-200">{tag ? tag.text : t.event}</span>
+                  <span className="text-xs text-zinc-400 dark:text-zinc-500">— {t.source}</span>
+                </li>
+              );
+            })}
         </ul>
       </Panel>
 
@@ -457,24 +457,64 @@ function DashboardView({
         <ul className="flex flex-col gap-1">
           {state.unresolved_questions.map((q: UnresolvedQuestion) => (
             <li key={q.id} className="text-sm text-zinc-700 dark:text-zinc-300">
-              ? {q.question}
+              {q.question}
             </li>
           ))}
         </ul>
       </Panel>
-
-      <DevConversationControl incidentId={incidentId} />
     </section>
+  );
+}
+
+/** Compact "who's on the call" summary - never a raw Agora uid, only
+ * display names / generic ordinal labels for participants Agora gives no
+ * identity for (see backend CLAUDE.md: "Participant names are UI-only"). */
+function ParticipantsSummary({ room, displayName }: { room: Room; displayName: string }) {
+  const humanRemotes = room.remoteUsers.filter((u) => u.uid !== room.agentUid);
+  const labels = [
+    `${displayName || "You"}${room.isMuted ? " · muted" : ""}`,
+    ...humanRemotes.map((_, i) => `Participant ${i + 2}`),
+  ];
+  return (
+    <span className="text-xs text-zinc-600 dark:text-zinc-300">
+      <span className="font-medium text-zinc-800 dark:text-zinc-100">
+        {labels.length} in room
+      </span>{" "}
+      · {labels.join(" · ")}
+    </span>
+  );
+}
+
+function SmallButton({
+  onClick,
+  disabled,
+  emphasis,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  emphasis?: "positive" | "negative";
+  children: React.ReactNode;
+}) {
+  const base = "rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50";
+  const style =
+    emphasis === "positive"
+      ? "bg-emerald-600 text-white"
+      : emphasis === "negative"
+        ? "bg-red-600 text-white"
+        : "border border-zinc-300 text-zinc-700 dark:border-zinc-700 dark:text-zinc-300";
+  return (
+    <button onClick={onClick} disabled={disabled} className={`${base} ${style}`}>
+      {children}
+    </button>
   );
 }
 
 const VOICE_INTERVENTION_RECENCY_MS = 10 * 60 * 1000; // 10 minutes
 
-/** Lightweight "EchoWard just said..." indicator (M6.2) — hidden once the
-
+/** Lightweight "EchoWard just spoke" indicator (M6.2) — hidden once the
  * last proactive intervention is no longer recent, and hidden entirely for a
- * fresh incident with no voice history yet.
- */
+ * fresh incident with no voice history yet. */
 function VoiceInterventionBanner({ intervention }: { intervention: VoiceIntervention | null }) {
   if (!intervention) return null;
   if (!isWithin(intervention.spoken_at, VOICE_INTERVENTION_RECENCY_MS)) return null;
@@ -482,46 +522,72 @@ function VoiceInterventionBanner({ intervention }: { intervention: VoiceInterven
   return (
     <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm dark:border-indigo-900 dark:bg-indigo-950/40">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500 dark:text-indigo-400">
-        EchoWard spoke {formatRelative(intervention.spoken_at)}
+        EchoWard · Just spoke{" "}
+        <span className="font-normal normal-case text-indigo-400 dark:text-indigo-500">
+          · {formatRelative(intervention.spoken_at)}
+        </span>
       </p>
       <p className="mt-0.5 text-indigo-900 dark:text-indigo-200">&ldquo;{intervention.message}&rdquo;</p>
     </div>
   );
 }
 
-/** Compact "what needs attention next" panel — findings, not raw AI text. */
+/** "What needs attention next" panel — a compact "All clear" state when
+ * there's nothing to flag, and the most severe open finding shown larger
+ * than the rest when there is. */
 function CoordinationPanel({ findings }: { findings: CoordinationFinding[] }) {
   const summary = findings.find((f) => f.type === "situational_summary");
   const attention = findings.filter((f) => f.type !== "situational_summary");
+  const [topFinding, ...restFindings] = attention;
 
   return (
-    <Panel title="Coordination" badge="ATTENTION REQUIRED" badgeClass="bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">
-      {summary && (
-        <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">{summary.description}</p>
-      )}
+    <Panel
+      title="Coordination"
+      badge={attention.length > 0 ? `ATTENTION REQUIRED · ${attention.length}` : "ALL CLEAR"}
+      badgeClass={
+        attention.length > 0
+          ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
+          : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+      }
+    >
+      {summary && <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">{summary.description}</p>}
       {attention.length === 0 ? (
-        <Empty text="No coordination issues detected." />
+        <Empty text="Nothing needs attention right now — EchoWard is watching." />
       ) : (
-        <ul className="flex flex-col gap-2">
-          {attention.map((f) => (
-            <li
-              key={f.id}
-              className={`rounded-md border px-3 py-2 text-sm ${COORDINATION_SEVERITY_BORDER[f.severity]}`}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${COORDINATION_SEVERITY_BADGE[f.severity]}`}
-                >
-                  {f.severity}
-                </span>
-                <p className="font-medium text-zinc-900 dark:text-zinc-100">{f.title}</p>
-              </div>
-              <p className="mt-1 text-zinc-600 dark:text-zinc-300">{f.description}</p>
-            </li>
-          ))}
-        </ul>
+        <div className="flex flex-col gap-2">
+          <FindingCard finding={topFinding} prominent />
+          {restFindings.length > 0 && (
+            <ul className="flex flex-col gap-1.5">
+              {restFindings.map((f) => (
+                <li key={f.id}>
+                  <FindingCard finding={f} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </Panel>
+  );
+}
+
+function FindingCard({ finding, prominent = false }: { finding: CoordinationFinding; prominent?: boolean }) {
+  return (
+    <div
+      className={`rounded-md border px-3 text-sm ${prominent ? "py-3" : "py-2"} ${COORDINATION_SEVERITY_BORDER[finding.severity]}`}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${COORDINATION_SEVERITY_BADGE[finding.severity]}`}
+        >
+          {finding.severity}
+        </span>
+        <p className={`font-medium text-zinc-900 dark:text-zinc-100 ${prominent ? "text-base" : "text-sm"}`}>
+          {finding.title}
+        </p>
+      </div>
+      <p className="mt-1 text-zinc-600 dark:text-zinc-300">{finding.description}</p>
+    </div>
   );
 }
 
@@ -597,8 +663,10 @@ function ActionRow({ incidentId, action }: { incidentId: string; action: Action 
 
       {awaitingConfirmation && (
         <div className="mt-2 flex flex-col gap-1.5 border-t border-amber-200 pt-2 dark:border-amber-900">
+          <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">Human confirmation required</p>
           <p className="text-xs text-amber-700 dark:text-amber-400">
-            {action.action_type} on {action.target} — {action.reason}
+            {action.action_type} → {action.target}
+            {action.reason ? ` — ${action.reason}` : ""}
           </p>
           <div className="flex gap-2">
             <input
@@ -649,9 +717,7 @@ function Panel({
   return (
     <div>
       <div className="mb-2 flex items-center gap-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          {title}
-        </h3>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{title}</h3>
         {badge && (
           <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${badgeClass}`}>{badge}</span>
         )}
@@ -663,56 +729,4 @@ function Panel({
 
 function Empty({ text }: { text: string }) {
   return <p className="text-sm text-zinc-400 dark:text-zinc-500">{text}</p>;
-}
-
-/** Small dev-only control for exercising the pipeline without a live Agora session. */
-function DevConversationControl({ incidentId }: { incidentId: string }) {
-  const [speaker, setSpeaker] = useState("Alice");
-  const [text, setText] = useState("Payments are failing for about 30% of users.");
-  const [busy, setBusy] = useState(false);
-  const [devError, setDevError] = useState<string | null>(null);
-
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
-    if (!speaker.trim() || !text.trim()) return;
-    setBusy(true);
-    setDevError(null);
-    try {
-      await sendConversationTurn(incidentId, speaker.trim(), text.trim());
-    } catch (err) {
-      setDevError(err instanceof Error ? err.message : "Failed to send statement");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <details className="mt-2 border-t border-zinc-200 pt-3 text-sm dark:border-zinc-800">
-      <summary className="cursor-pointer text-xs text-zinc-400 dark:text-zinc-500">
-        Dev: send a test conversation statement
-      </summary>
-      <form onSubmit={handleSend} className="mt-2 flex flex-col gap-2 sm:flex-row">
-        <input
-          className="w-28 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-xs text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
-          value={speaker}
-          onChange={(e) => setSpeaker(e.target.value)}
-          placeholder="Speaker"
-        />
-        <input
-          className="flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-xs text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="What did they say?"
-        />
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-md bg-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-800 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-100"
-        >
-          Send
-        </button>
-      </form>
-      {devError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{devError}</p>}
-    </details>
-  );
 }
