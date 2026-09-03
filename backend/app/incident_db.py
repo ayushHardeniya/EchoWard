@@ -605,6 +605,29 @@ def list_open_conflicts(conn: sqlite3.Connection, incident_id: str) -> list[Conf
     return [_row_to_conflict(r) for r in rows]
 
 
+def get_conflict(conflict_id: str) -> Conflict | None:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM conflicts WHERE id = ?", (conflict_id,)).fetchone()
+    return _row_to_conflict(row) if row else None
+
+
+def update_conflict_status(conflict_id: str, status: ConflictStatus) -> Conflict | None:
+    """Set conflict.status directly - the only sanctioned mutation of it.
+
+    Only ever called from an explicit human action (the resolve endpoint in
+    incidents_api.py) - EchoWard/Gemini never picks a side in a conflict, see
+    CLAUDE.md's product principle, so nothing in intelligence.py/coordination.py/
+    voice.py is allowed to call this.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE conflicts SET status = ? WHERE id = ?",
+            (status.value, conflict_id),
+        )
+    return get_conflict(conflict_id)
+
+
 # --- Coordination findings (M4) -----------------------------------------------
 # One row per (incident, dedup_key) - app/coordination.py owns dedup_key format
 # and is the only writer that decides *when* to upsert/resolve a finding; this

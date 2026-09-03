@@ -13,6 +13,7 @@ import {
   INCIDENT_STATUSES,
   type IncidentStatus,
   prepareAction,
+  resolveConflict,
   sendConversationTurn,
   type TimelineEvent,
   type UnresolvedQuestion,
@@ -369,30 +370,7 @@ export default function IncidentDashboard({
         {state.conflicts.length === 0 && <Empty text="No conflicting information reported." />}
         <ul className="flex flex-col gap-2">
           {state.conflicts.map((c: Conflict) => (
-            <li
-              key={c.id}
-              className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm dark:border-red-900 dark:bg-red-950/40"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <p className="font-medium text-red-900 dark:text-red-200">{c.topic}</p>
-                <span className="shrink-0 text-xs font-semibold uppercase text-red-700 dark:text-red-400">
-                  {c.status}
-                </span>
-              </div>
-              <ul className="mt-1.5 flex flex-col gap-1">
-                {c.statements.map((s, i) => (
-                  <li key={i} className="rounded bg-white/60 px-2 py-1 text-red-800 dark:bg-red-950/30 dark:text-red-300">
-                    <span className="mr-1 font-medium">{s.source}:</span>
-                    <span className="line-clamp-2" title={s.statement}>
-                      &ldquo;{s.statement}&rdquo;
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-1.5 text-xs font-medium text-red-600 dark:text-red-400">
-                Human resolution required — EchoWard has not decided who is right.
-              </p>
-            </li>
+            <ConflictRow key={c.id} incidentId={incidentId} conflict={c} />
           ))}
         </ul>
       </Panel>
@@ -588,6 +566,72 @@ function FindingCard({ finding, prominent = false }: { finding: CoordinationFind
       </div>
       <p className="mt-1 text-zinc-600 dark:text-zinc-300">{finding.description}</p>
     </div>
+  );
+}
+
+/**
+ * One conflict's card, including the explicit human "Resolve" control. Only a
+ * human clicking this ever moves a conflict out of `unresolved` - EchoWard
+ * itself never picks a side (see CLAUDE.md's product principle), so the UI
+ * makes the distinction explicit in the button/resolved-state copy below.
+ */
+function ConflictRow({ incidentId, conflict }: { incidentId: string; conflict: Conflict }) {
+  const [busy, setBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const unresolved = conflict.status === "unresolved";
+
+  async function handleResolve() {
+    setBusy(true);
+    setRowError(null);
+    try {
+      await resolveConflict(incidentId, conflict.id);
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : "Failed to resolve conflict");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <li className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm dark:border-red-900 dark:bg-red-950/40">
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-medium text-red-900 dark:text-red-200">{conflict.topic}</p>
+        <span className="shrink-0 text-xs font-semibold uppercase text-red-700 dark:text-red-400">
+          {conflict.status}
+        </span>
+      </div>
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {conflict.statements.map((s, i) => (
+          <li key={i} className="rounded bg-white/60 px-2 py-1 text-red-800 dark:bg-red-950/30 dark:text-red-300">
+            <span className="mr-1 font-medium">{s.source}:</span>
+            <span className="line-clamp-2" title={s.statement}>
+              &ldquo;{s.statement}&rdquo;
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {unresolved ? (
+        <div className="mt-2 flex items-center justify-between gap-2 border-t border-red-200 pt-2 dark:border-red-900">
+          <p className="text-xs font-medium text-red-600 dark:text-red-400">
+            Human resolution required — EchoWard has not decided who is right.
+          </p>
+          <button
+            onClick={handleResolve}
+            disabled={busy}
+            className="shrink-0 rounded-md bg-red-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+          >
+            {busy ? "Resolving…" : "Mark resolved"}
+          </button>
+        </div>
+      ) : (
+        <p className="mt-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+          Resolved by a human — EchoWard did not decide this.
+        </p>
+      )}
+
+      {rowError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{rowError}</p>}
+    </li>
   );
 }
 

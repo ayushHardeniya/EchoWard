@@ -218,6 +218,10 @@ export function confirmAction(
   });
 }
 
+export function resolveConflict(incidentId: string, conflictId: string): Promise<IncidentState> {
+  return postJson<IncidentState>(`/api/incidents/${incidentId}/conflicts/${conflictId}/resolve`, {});
+}
+
 export function sendConversationTurn(
   incidentId: string,
   speaker: string,

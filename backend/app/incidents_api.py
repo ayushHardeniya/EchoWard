@@ -6,6 +6,7 @@ from starlette.concurrency import run_in_threadpool
 from app import actions, coordination, incident_db, tools, voice
 from app.incident_models import (
     ConfirmActionRequest,
+    ConflictStatus,
     ConversationTurnRequest,
     ConversationTurnResponse,
     CreateIncidentRequest,
@@ -123,6 +124,41 @@ async def post_conversation_turn(incident_id: str, body: ConversationTurnRequest
         result = result.model_copy(update={"state": state})
 
     return result
+
+
+@router.post("/{incident_id}/conflicts/{conflict_id}/resolve", response_model=IncidentState)
+async def resolve_conflict(incident_id: str, conflict_id: str) -> IncidentState:
+    """Explicit human resolution of a surfaced conflict.
+
+    EchoWard/Gemini never decides which side of a conflict is correct (see
+    CLAUDE.md's product principle and app/intelligence.py's extraction prompt)
+    - this is the only path that moves a Conflict out of `unresolved`, and it
+    exists solely for a human on the call to say the disagreement is settled.
+    """
+    if incident_db.get_incident(incident_id) is None:
+        raise HTTPException(status_code=404, detail=f"Incident not found: {incident_id}")
+
+    conflict = incident_db.get_conflict(conflict_id)
+    if conflict is None or conflict.incident_id != incident_id:
+        raise HTTPException(status_code=404, detail=f"Conflict not found: {conflict_id}")
+
+    incident_db.update_conflict_status(conflict_id, ConflictStatus.resolved)
+    logger.info("Conflict resolved by human: incident=%s conflict=%s", incident_id, conflict_id)
+
+    # Resolving a conflict removes its mirrored coordination finding (M4 only
+    # mirrors *unresolved* conflicts, see coordination.py's _conflict_findings) -
+    # recompute and broadcast so the dashboard drops it immediately. This must
+    # stay deterministic-only (no Gemini call): explicit human conflict
+    # resolution can't be left hanging on an LLM retry loop, and Gemini never
+    # gets a vote in conflict resolution anyway - see coordination.py's
+    # `include_missing_information` for why existing missing_information
+    # findings are unaffected by skipping it here.
+    state = await run_in_threadpool(
+        coordination.refresh_coordination_findings, incident_id, include_missing_information=False
+    )
+    assert state is not None
+    await manager.broadcast_state(incident_id, state)
+    return state
 
 
 @router.post("/{incident_id}/actions/{action_id}/prepare", response_model=IncidentState)

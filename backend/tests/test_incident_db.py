@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from app import incident_db
 from app.db import get_connection, init_db
-from app.incident_models import ActionStatus, ConflictStatement
+from app.incident_models import ActionStatus, ConflictStatement, ConflictStatus
 
 
 def test_create_and_get_incident() -> None:
@@ -102,6 +102,37 @@ def test_append_conflict_statements_merges_sources() -> None:
     conflicts = incident_db.list_conflicts(incident.id)
     assert len(conflicts) == 1
     assert len(conflicts[0].statements) == 3
+
+
+def test_update_conflict_status_resolves_it() -> None:
+    incident = incident_db.create_incident("Conflict resolution test")
+    now = datetime.now(UTC)
+    with get_connection() as conn:
+        conflict = incident_db.insert_conflict(
+            conn,
+            incident.id,
+            "Database CPU",
+            [
+                ConflictStatement(source="Alice", statement="CPU at 95%"),
+                ConflictStatement(source="Bob", statement="CPU is normal"),
+            ],
+            now,
+        )
+    assert conflict.status == ConflictStatus.unresolved
+
+    updated = incident_db.update_conflict_status(conflict.id, ConflictStatus.resolved)
+    assert updated is not None
+    assert updated.status == ConflictStatus.resolved
+
+    fetched = incident_db.get_conflict(conflict.id)
+    assert fetched is not None
+    assert fetched.status == ConflictStatus.resolved
+    # The conflict's statements/topic are untouched by resolution - only status moves.
+    assert len(fetched.statements) == 2
+
+
+def test_get_conflict_missing_returns_none() -> None:
+    assert incident_db.get_conflict("nope") is None
 
 
 def test_incident_survives_reinitializing_the_schema() -> None:

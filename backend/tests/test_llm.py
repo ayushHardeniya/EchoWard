@@ -122,3 +122,21 @@ def test_retries_on_network_transport_error(gemini_configured: None, mock_client
 
     assert result is success.parsed
     assert mock_client.models.generate_content.call_count == 2
+
+
+def test_uses_gemini_model_from_settings_not_a_hardcoded_value(
+    monkeypatch: pytest.MonkeyPatch, mock_client: MagicMock
+) -> None:
+    # Guards against the model name being hardcoded anywhere in app/llm.py -
+    # whatever GEMINI_MODEL resolves to in Settings must be exactly what's
+    # sent to the Gemini API, so backend/.env is the single source of truth.
+    monkeypatch.setattr(
+        llm,
+        "get_settings",
+        lambda: Settings(gemini_api_key="test-key", gemini_model="some-configured-model"),
+    )
+    mock_client.models.generate_content.return_value = MagicMock(parsed=ConversationAnalysis())
+
+    generate_structured("prompt", ConversationAnalysis)
+
+    assert mock_client.models.generate_content.call_args.kwargs["model"] == "some-configured-model"

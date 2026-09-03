@@ -540,19 +540,56 @@ def _persist_reconciled(incident_id: str, proposed: list[ProposedFinding]) -> No
                 incident_db.resolve_coordination_finding(conn, existing_finding.id, now)
 
 
-def refresh_coordination_findings(incident_id: str) -> IncidentState | None:
+def _carried_forward_missing_information(incident_id: str) -> list[ProposedFinding]:
+    """Re-propose existing open missing_information findings unchanged, without
+
+    calling Gemini. Used when a refresh pass deliberately skips the LLM check
+    (see `include_missing_information` below) - without this, their absence
+    from the proposed set would make `_persist_reconciled` treat them as
+    "no longer applicable" and resolve them, which is wrong: skipping the
+    check this round says nothing about whether the gap is still real.
+    """
+    return [
+        ProposedFinding(
+            dedup_key=f.dedup_key,
+            type=f.type,
+            severity=f.severity,
+            title=f.title,
+            description=f.description,
+            related_ids=f.related_ids,
+        )
+        for f in incident_db.list_coordination_findings(incident_id)
+        if f.type == CoordinationFindingType.missing_information and f.status == CoordinationFindingStatus.open
+    ]
+
+
+def refresh_coordination_findings(
+    incident_id: str, *, include_missing_information: bool = True
+) -> IncidentState | None:
     """The M4 entry point: recompute coordination findings for one incident and
 
     persist the result. Returns the incident's fresh full state (coordination
     findings included) for the caller to broadcast/return, or None if the
     incident doesn't exist.
+
+    `include_missing_information` gates the one Gemini-backed check
+    (`analyze_missing_information`, via `_reconcile_missing_information`) -
+    every other check here is deterministic and always runs. Defaults to True
+    (unchanged behavior for conversation turns and status changes). A caller
+    that must stay Gemini-independent and low-latency - e.g. the explicit
+    human conflict-resolve endpoint - passes False; existing open
+    missing_information findings are then carried forward unchanged rather
+    than dropped, so a deterministic-only refresh can never resolve them.
     """
     state = incident_db.get_incident_state(incident_id)
     if state is None:
         return None
 
     proposed = analyze_incident_deterministic(state)
-    proposed += _reconcile_missing_information(state)
+    if include_missing_information:
+        proposed += _reconcile_missing_information(state)
+    else:
+        proposed += _carried_forward_missing_information(incident_id)
     _persist_reconciled(incident_id, proposed)
 
     return incident_db.get_incident_state(incident_id)

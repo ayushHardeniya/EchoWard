@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -88,6 +89,34 @@ def test_stream_broadcasts_on_status_change() -> None:
         update = ws.receive_json()
 
     assert update["state"]["incident"]["status"] == "mitigating"
+
+
+def test_stream_broadcasts_on_conflict_resolve() -> None:
+    from app.db import get_connection
+    from app.incident_models import ConflictStatement
+
+    incident_id = _create_incident("Conflict resolve broadcast test")
+    now = datetime.now(UTC)
+    with get_connection() as conn:
+        conflict = incident_db.insert_conflict(
+            conn,
+            incident_id,
+            "Database health",
+            [
+                ConflictStatement(source="Engineer", statement="The database is overloaded."),
+                ConflictStatement(source="Support", statement="The database looks healthy."),
+            ],
+            now,
+        )
+
+    with client.websocket_connect(f"/api/incidents/{incident_id}/stream") as ws:
+        ws.receive_json()  # initial state
+        res = client.post(f"/api/incidents/{incident_id}/conflicts/{conflict.id}/resolve")
+        assert res.status_code == 200
+        update = ws.receive_json()
+
+    resolved = next(c for c in update["state"]["conflicts"] if c["id"] == conflict.id)
+    assert resolved["status"] == "resolved"
 
 
 def test_multiple_connected_clients_all_receive_the_update() -> None:

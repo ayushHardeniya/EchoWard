@@ -15,8 +15,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import coordination
+from app import coordination, incident_db
 from app.coordination import CoordinationGapAnalysis, analyze_incident_deterministic
+from app.db import get_connection
 from app.incident_models import (
     Action,
     ActionStatus,
@@ -498,6 +499,73 @@ def test_missing_information_llm_check_is_mocked_and_optional() -> None:
     assert len(gaps) == 1
     assert gaps[0]["severity"] == "high"
     assert "regions" in gaps[0]["description"].lower()
+
+
+def _create_conflict(incident_id: str) -> str:
+    with get_connection() as conn:
+        conflict = incident_db.insert_conflict(
+            conn,
+            incident_id,
+            "Database health",
+            [
+                ConflictStatement(source="Engineer", statement="The database is overloaded."),
+                ConflictStatement(source="Support", statement="The database looks healthy."),
+            ],
+            T0,
+        )
+    return conflict.id
+
+
+def test_resolve_conflict_does_not_call_gemini() -> None:
+    # Regression test: explicit human conflict resolution must be a
+    # deterministic DB/state operation, never dependent on (or blocked by)
+    # Gemini - see coordination.refresh_coordination_findings'
+    # `include_missing_information` and incidents_api.resolve_conflict.
+    incident_id = _create_incident("Conflict resolve no-gemini test")
+    conflict_id = _create_conflict(incident_id)
+
+    with patch.object(coordination, "generate_structured") as mock_generate:
+        res = client.post(f"/api/incidents/{incident_id}/conflicts/{conflict_id}/resolve")
+
+    assert res.status_code == 200
+    mock_generate.assert_not_called()
+
+    resolved = next(c for c in res.json()["conflicts"] if c["id"] == conflict_id)
+    assert resolved["status"] == "resolved"
+    assert not any(f["type"] == "conflict" for f in res.json()["coordination_findings"])
+
+
+def test_resolve_conflict_preserves_existing_missing_information_findings() -> None:
+    # A deterministic-only refresh (see above) must not wipe out
+    # missing_information findings from a *previous*, LLM-backed refresh -
+    # skipping the check this round says nothing about whether the gap is
+    # still real, so it must be carried forward rather than resolved.
+    incident_id = _create_incident("Conflict resolve preserves gaps test")
+    conflict_id = _create_conflict(incident_id)
+
+    gap_analysis = CoordinationGapAnalysis(
+        gaps=[
+            ExtractedCoordinationGap(
+                title="Affected regions unknown",
+                description="Impact is reported but affected regions are not confirmed.",
+                severity="high",
+            )
+        ]
+    )
+    from app.incident_models import ExtractedFact
+
+    with patch.object(coordination, "generate_structured", return_value=gap_analysis):
+        body = _send_turn(incident_id, ConversationAnalysis(facts=[ExtractedFact(statement="Impact confirmed.")]))
+    assert any(f["type"] == "missing_information" for f in body["state"]["coordination_findings"])
+
+    with patch.object(coordination, "generate_structured") as mock_generate:
+        res = client.post(f"/api/incidents/{incident_id}/conflicts/{conflict_id}/resolve")
+
+    assert res.status_code == 200
+    mock_generate.assert_not_called()
+    gaps = [f for f in res.json()["coordination_findings"] if f["type"] == "missing_information"]
+    assert len(gaps) == 1
+    assert gaps[0]["status"] == "open"
 
 
 def test_missing_information_defaults_to_empty_without_llm_configured() -> None:
