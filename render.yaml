@@ -1,0 +1,52 @@
+# Render Blueprint for EchoWard's FastAPI backend.
+#
+# Deploy: Render dashboard > New > Blueprint > point at this repo. Render reads
+# this file and creates the service below; secret-valued env vars (sync: false)
+# are left empty here and must be filled in via the Render dashboard after the
+# first deploy - never commit real values into this file.
+#
+# The frontend (Next.js) deploys separately on Vercel - see README.md's
+# "Deployment" section - Vercel doesn't use this file.
+
+services:
+  - type: web
+    name: echoward-backend
+    env: python
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: APP_ENV
+        value: production
+      # Comma-separated list of allowed frontend origins - set this to your
+      # Vercel deployment's URL(s), e.g. https://echoward.vercel.app
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DATABASE_PATH
+        value: data/echoward.db
+      # --- Secrets: set these in the Render dashboard, not here ---
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: AGORA_APP_ID
+        sync: false
+      - key: AGORA_APP_CERTIFICATE
+        sync: false
+      - key: AGORA_CUSTOMER_ID
+        sync: false
+      - key: AGORA_CUSTOMER_SECRET
+        sync: false
+      - key: AGORA_CONVO_AI_BASE_URL
+        value: https://api.agora.io/api/conversational-ai-agent/v2/projects
+      - key: AGORA_TOKEN_EXPIRE_SECONDS
+        value: "3600"
+      - key: AGORA_AGENT_UID
+        value: "9999"
+      - key: AGORA_AGENT_PIPELINE_ID
+        sync: false

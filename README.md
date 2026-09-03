@@ -306,3 +306,54 @@ stale actions, decisions without follow-through, hypotheses being treated as fac
 risks, and (optionally, with Gemini) semantic information gaps — pending live-account verification
 for the external integrations (Agora, Gemini) as detailed above. Next milestone: tool execution +
 human confirmation (M5), and spoken coordination summaries (M6).
+
+## Deployment
+
+Backend on [Render](https://render.com) (free-tier web service), frontend on
+[Vercel](https://vercel.com) — no Docker, SQLite unchanged.
+
+### Backend (Render)
+
+This repo includes `render.yaml` (Blueprint) at the repo root — in the Render dashboard, **New >
+Blueprint**, point it at this repo, and Render creates the service from that file: Python
+environment, `rootDir: backend`, `pip install -r requirements.txt`, and
+`uvicorn app.main:app --host 0.0.0.0 --port $PORT` as the start command (the app itself has no
+hardcoded host/port — this is the only thing that changes between local `--reload` and
+production). `/health` is used as the health check path.
+
+The Blueprint declares every env var `app/config.py` reads, but leaves secret-valued ones
+(`sync: false`) empty — fill those in via the Render dashboard after the first deploy, **never**
+by editing `render.yaml`:
+
+- **Secrets to set on Render:** `GEMINI_API_KEY`, `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`,
+  `AGORA_CUSTOMER_ID`, `AGORA_CUSTOMER_SECRET`, `AGORA_AGENT_PIPELINE_ID` — same names/meanings as
+  `backend/.env.example`.
+- **Non-secret, already set by the Blueprint:** `APP_ENV=production`, `GEMINI_MODEL`,
+  `DATABASE_PATH`, `AGORA_CONVO_AI_BASE_URL`, `AGORA_TOKEN_EXPIRE_SECONDS`, `AGORA_AGENT_UID`.
+- **Set once you know your Vercel URL:** `CORS_ORIGINS` — the frontend's production origin(s),
+  comma-separated (e.g. `https://echoward.vercel.app`). `CORSMiddleware` matches these exactly, so
+  a Vercel *preview* deployment (a different random subdomain per PR) won't have CORS access
+  unless its exact URL is added too.
+
+**Known free-tier limitations** (not addressed here — would need a paid plan or a datastore
+change, both out of scope for this hackathon deployment): Render's free web services have an
+**ephemeral filesystem**, so the SQLite file is wiped on every redeploy/restart — this is a
+hackathon demo deployment, not a durable one. Free services also spin down after ~15 minutes idle;
+the first request after that wakes it up (30–60s cold start) and drops any open WebSocket
+connection, which the frontend already reconnects with backoff (`useIncidentStream.ts`) — just
+give the backend a minute to wake up before a live demo.
+
+### Frontend (Vercel)
+
+Plain Next.js app, no config file needed — in the Vercel dashboard, **New Project**, import this
+repo, and set:
+
+- **Root Directory:** `frontend` (this is a monorepo — Vercel needs to be told where
+  `package.json` is; there's no `vercel.json` equivalent for this, it's a project setting).
+- **Environment variable:** `NEXT_PUBLIC_API_URL` = the Render backend's public URL (e.g.
+  `https://echoward-backend.onrender.com`). `NEXT_PUBLIC_*` vars are inlined at build time, so this
+  must be set before the first build. The WebSocket URL (`useIncidentStream.ts`) is derived from
+  this same value (`http`→`ws`, `https`→`wss`) — no separate WS env var needed.
+
+Nothing else changes: `next build` already passes as-is (no `output: "standalone"` or other
+Docker-oriented config — that's unnecessary for a standard Vercel deployment).
