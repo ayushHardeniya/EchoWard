@@ -225,6 +225,179 @@ def test_apply_analysis_merges_conflict_on_same_topic() -> None:
     assert conflicts[0].involved_sources == ["Alice", "Bob", "Carol"]
 
 
+# --- Deterministic fact-vs-hypothesis contradiction detection ------------------------
+# The LLM's own conflict detection (EXTRACTION_INSTRUCTIONS) only sees ONE new
+# statement per call and can classify it as a plain FACT without also flagging a
+# conflict against an existing HYPOTHESIS - these tests exercise the narrow,
+# deterministic backstop for exactly that case (see intelligence._detect_contradiction),
+# entirely separate from (and never invoking) the LLM.
+
+
+def test_contradictory_fact_creates_conflict_against_existing_hypothesis() -> None:
+    incident = incident_db.create_incident("Contradiction detection test")
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    fact_analysis = ConversationAnalysis(facts=[ExtractedFact(statement="Database metrics look normal.")])
+
+    with get_connection() as conn:
+        intelligence.apply_analysis(conn, incident.id, "Alice", hypothesis_analysis, _now())
+        changes = intelligence.apply_analysis(conn, incident.id, "Bob", fact_analysis, _now())
+
+    assert len(changes.conflicts_created) == 1
+    conflict = changes.conflicts_created[0]
+    # Requirement 3: created unresolved, and stays that way until a human acts.
+    assert conflict.status.value == "unresolved"
+    assert conflict.involved_sources == ["Alice", "Bob"]
+    statements = {s.statement for s in conflict.statements}
+    assert "The payment database is overloaded." in statements
+    assert "Database metrics look normal." in statements
+
+    # EchoWard must not decide who's right or invent a root cause - the
+    # hypothesis itself is untouched (still proposed, never promoted to a fact).
+    hypotheses = incident_db.list_hypotheses(incident.id)
+    assert len(hypotheses) == 1
+    assert hypotheses[0].status.value == "proposed"
+
+    state = incident_db.get_incident_state(incident.id)
+    assert state is not None
+    assert len(state.conflicts) == 1
+    assert state.conflicts[0].status.value == "unresolved"
+
+
+def test_contradictory_fact_does_not_duplicate_conflict_on_repeated_processing() -> None:
+    incident = incident_db.create_incident("Contradiction dedup test")
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    fact_analysis = ConversationAnalysis(facts=[ExtractedFact(statement="Database metrics look normal.")])
+
+    with get_connection() as conn:
+        intelligence.apply_analysis(conn, incident.id, "Alice", hypothesis_analysis, _now())
+        changes1 = intelligence.apply_analysis(conn, incident.id, "Bob", fact_analysis, _now())
+        changes2 = intelligence.apply_analysis(conn, incident.id, "Bob", fact_analysis, _now())
+
+    assert len(changes1.conflicts_created) == 1
+    assert len(changes2.conflicts_created) == 0
+    assert len(changes2.conflicts_updated) == 1  # merged into the same conflict, not duplicated
+
+    conflicts = incident_db.list_conflicts(incident.id)
+    assert len(conflicts) == 1
+    assert conflicts[0].status.value == "unresolved"
+
+
+def test_unrelated_hypothesis_and_fact_do_not_create_a_conflict() -> None:
+    incident = incident_db.create_incident("Unrelated statements test")
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    fact_analysis = ConversationAnalysis(facts=[ExtractedFact(statement="The login page CSS is broken.")])
+
+    with get_connection() as conn:
+        intelligence.apply_analysis(conn, incident.id, "Alice", hypothesis_analysis, _now())
+        changes = intelligence.apply_analysis(conn, incident.id, "Bob", fact_analysis, _now())
+
+    assert len(changes.conflicts_created) == 0
+    assert incident_db.list_conflicts(incident.id) == []
+
+
+def test_same_subject_fact_without_opposite_state_does_not_create_a_conflict() -> None:
+    # Sharing a subject word alone must not be enough - only an actual curated
+    # opposite-state pair (see _CONTRADICTORY_STATE_PAIRS) should ever fire.
+    incident = incident_db.create_incident("Same subject, no contradiction test")
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    fact_analysis = ConversationAnalysis(
+        facts=[ExtractedFact(statement="The payment database was restarted at noon.")]
+    )
+
+    with get_connection() as conn:
+        intelligence.apply_analysis(conn, incident.id, "Alice", hypothesis_analysis, _now())
+        changes = intelligence.apply_analysis(conn, incident.id, "Bob", fact_analysis, _now())
+
+    assert len(changes.conflicts_created) == 0
+
+
+# --- Cross-detection-path conflict dedup ----------------------------------------------
+# The LLM's own CONFLICT extraction and the deterministic fact-vs-hypothesis backstop
+# above can both fire for the identical underlying contradiction in the same turn (the
+# LLM might extract a statement as both a FACT and a CONFLICT at once) - _same_conflict
+# is what makes them merge into one Conflict instead of two. Topic text alone can't do
+# this: the LLM picks its own short topic label while the backstop's is derived from
+# the hypothesis statement, so they rarely fuzzy-match each other - only the underlying
+# *statement* text (which both paths draw from the same source-of-truth records) does.
+
+
+def test_llm_and_deterministic_conflict_for_same_contradiction_merge_into_one() -> None:
+    incident = incident_db.create_incident("Cross-detection conflict merge test")
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    # Same turn: the LLM extracts the new statement as both a FACT and its own
+    # CONFLICT (a differently-worded topic than the backstop would produce) -
+    # this is what previously produced two separate Conflict rows.
+    turn_analysis = ConversationAnalysis(
+        facts=[ExtractedFact(statement="Database metrics look normal.")],
+        conflicts=[
+            ExtractedConflict(
+                topic="Payment database health",
+                statements=[
+                    ExtractedConflictStatement(source="Alice", statement="The payment database is overloaded."),
+                    ExtractedConflictStatement(source="Bob", statement="Database metrics look normal."),
+                ],
+            )
+        ],
+    )
+
+    with get_connection() as conn:
+        intelligence.apply_analysis(conn, incident.id, "Alice", hypothesis_analysis, _now())
+        changes = intelligence.apply_analysis(conn, incident.id, "Bob", turn_analysis, _now())
+        # Repeated processing of the same combined turn must stay idempotent too.
+        changes_repeat = intelligence.apply_analysis(conn, incident.id, "Bob", turn_analysis, _now())
+
+    # One created (whichever path ran first this turn), one merged into it - not two creates.
+    assert len(changes.conflicts_created) == 1
+    assert len(changes.conflicts_updated) == 1
+    assert len(changes_repeat.conflicts_created) == 0
+
+    conflicts = incident_db.list_conflicts(incident.id)
+    assert len(conflicts) == 1
+    assert conflicts[0].status.value == "unresolved"
+
+
+def test_deterministic_conflict_does_not_merge_into_unrelated_existing_conflict() -> None:
+    incident = incident_db.create_incident("Unrelated conflicts stay separate test")
+    unrelated_conflict_analysis = ConversationAnalysis(
+        conflicts=[
+            ExtractedConflict(
+                topic="Checkout latency",
+                statements=[
+                    ExtractedConflictStatement(source="Carol", statement="Checkout latency spiked to 4 seconds."),
+                    ExtractedConflictStatement(source="Dave", statement="Checkout latency looks normal to me."),
+                ],
+            )
+        ]
+    )
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    fact_analysis = ConversationAnalysis(facts=[ExtractedFact(statement="Database metrics look normal.")])
+
+    with get_connection() as conn:
+        intelligence.apply_analysis(conn, incident.id, "Carol", unrelated_conflict_analysis, _now())
+        intelligence.apply_analysis(conn, incident.id, "Alice", hypothesis_analysis, _now())
+        changes = intelligence.apply_analysis(conn, incident.id, "Bob", fact_analysis, _now())
+
+    assert len(changes.conflicts_created) == 1  # a new, second conflict - not merged into the unrelated one
+
+    conflicts = incident_db.list_conflicts(incident.id)
+    assert len(conflicts) == 2
+    topics = {c.topic for c in conflicts}
+    assert "Checkout latency" in topics
+    assert all(c.status.value == "unresolved" for c in conflicts)
+
+
 # --- process_conversation_turn: LLM-call error handling ------------------------------
 
 

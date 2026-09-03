@@ -1,10 +1,20 @@
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app import incident_db
+from app import intelligence as intelligence_module
 from app.db import get_connection
-from app.incident_models import ConflictStatement, ConflictStatus
+from app.incident_models import (
+    ConflictStatement,
+    ConflictStatus,
+    ConversationAnalysis,
+    ExtractedConflict,
+    ExtractedConflictStatement,
+    ExtractedFact,
+    ExtractedHypothesis,
+)
 from app.main import app
 
 client = TestClient(app)
@@ -146,6 +156,89 @@ def test_resolve_conflict_endpoint_conflict_not_found() -> None:
     created = client.post("/api/incidents", json={"title": "Missing conflict test"}).json()
     res = client.post(f"/api/incidents/{created['id']}/conflicts/does-not-exist/resolve")
     assert res.status_code == 404
+
+
+def test_deterministically_detected_conflict_resolves_via_the_same_endpoint() -> None:
+    # Requirement 4: a conflict created by the deterministic fact-vs-hypothesis
+    # backstop (intelligence._detect_contradiction) must still go through the
+    # exact same human-only resolution endpoint as an LLM-detected one - no
+    # separate/new resolution path for it.
+    created = client.post("/api/incidents", json={"title": "Deterministic conflict resolve test"}).json()
+    incident_id = created["id"]
+
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    fact_analysis = ConversationAnalysis(facts=[ExtractedFact(statement="Database metrics look normal.")])
+
+    with patch.object(intelligence_module, "analyze_conversation", return_value=hypothesis_analysis):
+        client.post(
+            f"/api/incidents/{incident_id}/conversation",
+            json={"speaker": "Alice", "text": "The payment database is overloaded."},
+        )
+    with patch.object(intelligence_module, "analyze_conversation", return_value=fact_analysis):
+        res = client.post(
+            f"/api/incidents/{incident_id}/conversation",
+            json={"speaker": "Bob", "text": "Actually, database metrics look normal."},
+        )
+
+    assert res.status_code == 200
+    conflicts = res.json()["state"]["conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["status"] == "unresolved"
+    conflict_id = conflicts[0]["id"]
+
+    resolve_res = client.post(f"/api/incidents/{incident_id}/conflicts/{conflict_id}/resolve")
+    assert resolve_res.status_code == 200
+    resolved = next(c for c in resolve_res.json()["conflicts"] if c["id"] == conflict_id)
+    assert resolved["status"] == "resolved"
+
+
+def test_merged_llm_and_deterministic_conflict_resolves_via_the_same_endpoint() -> None:
+    # Requirement 4: even after the LLM-detected and deterministic-backstop
+    # conflicts merge into one row (see test_intelligence.py's cross-detection
+    # dedup tests), resolving it still goes through the same, only, human
+    # resolution endpoint - no separate path for a "merged" conflict.
+    created = client.post("/api/incidents", json={"title": "Merged conflict resolve test"}).json()
+    incident_id = created["id"]
+
+    hypothesis_analysis = ConversationAnalysis(
+        hypotheses=[ExtractedHypothesis(statement="The payment database is overloaded.")]
+    )
+    turn_analysis = ConversationAnalysis(
+        facts=[ExtractedFact(statement="Database metrics look normal.")],
+        conflicts=[
+            ExtractedConflict(
+                topic="Payment database health",
+                statements=[
+                    ExtractedConflictStatement(source="Alice", statement="The payment database is overloaded."),
+                    ExtractedConflictStatement(source="Bob", statement="Database metrics look normal."),
+                ],
+            )
+        ],
+    )
+
+    with patch.object(intelligence_module, "analyze_conversation", return_value=hypothesis_analysis):
+        client.post(
+            f"/api/incidents/{incident_id}/conversation",
+            json={"speaker": "Alice", "text": "The payment database is overloaded."},
+        )
+    with patch.object(intelligence_module, "analyze_conversation", return_value=turn_analysis):
+        res = client.post(
+            f"/api/incidents/{incident_id}/conversation",
+            json={"speaker": "Bob", "text": "Actually, database metrics look normal."},
+        )
+
+    assert res.status_code == 200
+    conflicts = res.json()["state"]["conflicts"]
+    assert len(conflicts) == 1  # merged, not duplicated
+    assert conflicts[0]["status"] == "unresolved"
+    conflict_id = conflicts[0]["id"]
+
+    resolve_res = client.post(f"/api/incidents/{incident_id}/conflicts/{conflict_id}/resolve")
+    assert resolve_res.status_code == 200
+    resolved = next(c for c in resolve_res.json()["conflicts"] if c["id"] == conflict_id)
+    assert resolved["status"] == "resolved"
 
 
 def test_resolve_conflict_endpoint_rejects_conflict_from_another_incident() -> None:

@@ -70,6 +70,29 @@ ALLOWED_ACTIONS: dict[str, frozenset[str]] = {
     "rollback_payment_service": frozenset({"payment-service"}),
 }
 
+# Canonical, human-readable description for each allowed action_type - keyed by
+# action_type alone since every entry above currently allows exactly one
+# target, so there's no ambiguity yet; revisit if an action_type ever gains a
+# second target. Used by app/actions.py's prepare_action() to overwrite an
+# Action's free-text description (which came from LLM extraction and can say
+# almost anything, e.g. "Enroll with the payment service" for a garbled
+# statement) once a human attaches a specific, validated action_type/target to
+# it - the card a human sees must always describe what will actually execute,
+# never the LLM's original guess.
+ACTION_DESCRIPTIONS: dict[str, str] = {
+    "rollback_payment_service": "Roll back the payment service",
+}
+
+
+def canonical_description(action_type: str) -> str | None:
+    """The canonical description for an allowlisted action_type, or None if
+
+    action_type isn't recognized (callers should fall back to the action's
+    existing description in that case - this never raises, since it's used
+    for display text, not the validation boundary above).
+    """
+    return ACTION_DESCRIPTIONS.get(action_type)
+
 
 def validate_action(*, action_type: str, target: str, reason: str, incident_id: str) -> ToolAction:
     """Raises ActionValidationError if action_type/target isn't on the

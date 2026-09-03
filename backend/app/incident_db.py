@@ -280,6 +280,30 @@ def insert_hypothesis(
     return hyp
 
 
+def list_open_hypotheses(conn: sqlite3.Connection, incident_id: str) -> list[Hypothesis]:
+    """Still-`proposed` hypotheses, queried within an existing transaction (for
+
+    the deterministic fact-vs-hypothesis contradiction check in intelligence.py)
+    - same pattern as list_open_actions/list_open_conflicts below.
+    """
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM hypotheses WHERE incident_id = ? AND status = ? ORDER BY timestamp ASC",
+        (incident_id, HypothesisStatus.proposed.value),
+    ).fetchall()
+    return [
+        Hypothesis(
+            id=r["id"],
+            incident_id=r["incident_id"],
+            statement=r["statement"],
+            source=r["source"],
+            timestamp=datetime.fromisoformat(r["timestamp"]),
+            status=HypothesisStatus(r["status"]),
+        )
+        for r in rows
+    ]
+
+
 def list_hypotheses(incident_id: str) -> list[Hypothesis]:
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
@@ -420,17 +444,37 @@ def get_action(incident_id: str, action_id: str) -> Action | None:
 
 
 def prepare_action(
-    conn: sqlite3.Connection, action_id: str, action_type: str, target: str, reason: str, when: datetime
+    conn: sqlite3.Connection,
+    action_id: str,
+    action_type: str,
+    target: str,
+    reason: str,
+    description: str,
+    when: datetime,
 ) -> Action:
-    """Attach a validated tool-action proposal to an existing Action and move
+    """Attach a validated tool-action proposal to an existing Action, move
 
-    it to `awaiting_confirmation`. Callers must validate action_type/target
-    (app/tools.py) and the action's current status (app/actions.py) first -
-    this function only writes what it's given.
+    it to `awaiting_confirmation`, and overwrite its description. Callers must
+    validate action_type/target (app/tools.py) and the action's current status
+    (app/actions.py) first - this function only writes what it's given.
+
+    `description` is overwritten (not merely defaulted) so the card a human
+    sees can never drift from the action_type/target actually being prepared -
+    see app/tools.py's canonical_description(), which app/actions.py resolves
+    before calling this.
     """
     conn.execute(
-        "UPDATE actions SET action_type = ?, target = ?, reason = ?, status = ?, updated_at = ? WHERE id = ?",
-        (action_type, target, reason, ActionStatus.awaiting_confirmation.value, _iso(when), action_id),
+        "UPDATE actions SET action_type = ?, target = ?, reason = ?, description = ?, status = ?, "
+        "updated_at = ? WHERE id = ?",
+        (
+            action_type,
+            target,
+            reason,
+            description,
+            ActionStatus.awaiting_confirmation.value,
+            _iso(when),
+            action_id,
+        ),
     )
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()

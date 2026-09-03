@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
-from app import incident_db
+from app import incident_db, tools
 from app.db import get_connection
 from app.incident_models import ActionStatus
 from app.main import app
@@ -49,6 +49,44 @@ def test_prepare_action_moves_to_awaiting_confirmation() -> None:
     assert action["status"] == "awaiting_confirmation"
     assert action["action_type"] == "rollback_payment_service"
     assert action["target"] == "payment-service"
+
+
+def test_canonical_description_known_and_unknown_action_type() -> None:
+    assert tools.canonical_description("rollback_payment_service") == "Roll back the payment service"
+    assert tools.canonical_description("some_unrelated_action") is None
+
+
+def test_prepare_overwrites_mismatched_description_with_canonical_text() -> None:
+    # Regression: a live test showed the action card display an unrelated
+    # LLM-extracted description ("Enroll with the payment service") while
+    # rollback_payment_service/payment-service was the action actually being
+    # prepared/executed. Once a human attaches a specific, validated
+    # action_type, the card must describe *that* action, not whatever the
+    # extraction guessed - rollback_payment_service can never be presented
+    # under an unrelated description.
+    incident_id = _create_incident("Description consistency test")
+    action_id = _insert_pending_action(incident_id, description="Enroll with the payment service")
+
+    res = client.post(f"/api/incidents/{incident_id}/actions/{action_id}/prepare", json=VALID_BODY)
+    assert res.status_code == 200
+
+    action = next(a for a in res.json()["actions"] if a["id"] == action_id)
+    assert action["description"] == "Roll back the payment service"
+    assert action["action_type"] == "rollback_payment_service"
+    assert action["target"] == "payment-service"
+
+    # Persisted, not just echoed in this response.
+    fetched = incident_db.get_action(incident_id, action_id)
+    assert fetched is not None
+    assert fetched.description == "Roll back the payment service"
+
+    # And stays correct all the way through confirm/execute - the description
+    # never reverts to the original mismatched text.
+    confirm_res = client.post(f"/api/incidents/{incident_id}/actions/{action_id}/confirm", json={})
+    assert confirm_res.status_code == 200
+    confirmed = next(a for a in confirm_res.json()["actions"] if a["id"] == action_id)
+    assert confirmed["description"] == "Roll back the payment service"
+    assert confirmed["tool_result"]["message"].startswith("[DEMO] Rollback completed successfully")
 
 
 def test_confirm_requires_prior_preparation() -> None:

@@ -76,13 +76,20 @@ def prepare_action(incident_id: str, action_id: str, action_type: str, target: s
     # written until this passes.
     tools.validate_action(action_type=action_type, target=target, reason=reason, incident_id=incident_id)
 
+    # The action's existing description came from LLM extraction and can say
+    # almost anything (see app/tools.py's canonical_description docstring) -
+    # once a human attaches a specific, validated action_type, the card must
+    # describe *that*, not whatever the extraction guessed. Falls back to the
+    # existing description only if action_type has no canonical text yet.
+    description = tools.canonical_description(action_type) or action.description
+
     when = datetime.now(UTC)
     with get_connection() as conn:
-        incident_db.prepare_action(conn, action_id, action_type, target, reason, when)
+        incident_db.prepare_action(conn, action_id, action_type, target, reason, description, when)
         incident_db.insert_timeline_event(
             conn,
             incident_id,
-            f'Action ready for execution, awaiting human confirmation: "{action.description}" '
+            f'Action ready for execution, awaiting human confirmation: "{description}" '
             f"({action_type} on {target}).",
             "system",
             when,
