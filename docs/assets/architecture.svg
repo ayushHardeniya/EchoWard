@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 900" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+    <marker id="arrowViolet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1700" height="900" fill="#ffffff"/>
+
+  <text x="850" y="34" text-anchor="middle" font-size="22" font-weight="700" fill="#0f172a">EchoWard — System Architecture</text>
+
+  <!-- ================= Proactive voice arc (above top row) ================= -->
+  <path d="M 1195 70 C 1195 -10, 415 -10, 415 70" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#arrowViolet)"/>
+  <text x="805" y="14" text-anchor="middle" font-size="14" fill="#7c3aed">proactive voice — coordination finding → Agora /speak → incident room</text>
+
+  <!-- ================= Top row: main flow ================= -->
+  <!-- A: Incident Participants -->
+  <rect x="40" y="70" width="230" height="90" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="155" y="105" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Incident</text>
+  <text x="155" y="124" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Participants</text>
+  <text x="155" y="145" text-anchor="middle" font-size="11.5" fill="#334155">humans on the call</text>
+
+  <!-- B: Agora Conversational AI Agent -->
+  <rect x="300" y="70" width="230" height="90" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="415" y="98" text-anchor="middle" font-size="14.5" font-weight="700" fill="#1e3a8a">Agora Conversational</text>
+  <text x="415" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#1e3a8a">AI Agent</text>
+  <text x="415" y="136" text-anchor="middle" font-size="11.5" fill="#334155">RTC room + managed</text>
+  <text x="415" y="150" text-anchor="middle" font-size="11.5" fill="#334155">ASR / LLM / TTS</text>
+
+  <!-- C: EchoWard Intelligence -->
+  <rect x="560" y="70" width="230" height="90" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="675" y="98" text-anchor="middle" font-size="14.5" font-weight="700" fill="#065f46">EchoWard</text>
+  <text x="675" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#065f46">Intelligence</text>
+  <text x="675" y="136" text-anchor="middle" font-size="11.5" fill="#334155">conversation turn →</text>
+  <text x="675" y="150" text-anchor="middle" font-size="11.5" fill="#334155">Gemini structured extraction</text>
+
+  <!-- D: Incident State -->
+  <rect x="820" y="70" width="230" height="90" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="935" y="98" text-anchor="middle" font-size="14.5" font-weight="700" fill="#065f46">Incident State</text>
+  <text x="935" y="118" text-anchor="middle" font-size="11.5" fill="#334155">facts · hypotheses · decisions</text>
+  <text x="935" y="134" text-anchor="middle" font-size="11.5" fill="#334155">actions · timeline · conflicts</text>
+  <text x="935" y="150" text-anchor="middle" font-size="11.5" fill="#334155">(SQLite)</text>
+
+  <!-- E: Coordination Intelligence -->
+  <rect x="1080" y="70" width="230" height="90" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="1195" y="98" text-anchor="middle" font-size="14.5" font-weight="700" fill="#5b21b6">Coordination</text>
+  <text x="1195" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#5b21b6">Intelligence</text>
+  <text x="1195" y="136" text-anchor="middle" font-size="11.5" fill="#334155">conflicts · gaps · ownership</text>
+  <text x="1195" y="150" text-anchor="middle" font-size="11.5" fill="#334155">staleness · summary</text>
+
+  <!-- F: Dashboard -->
+  <rect x="1340" y="70" width="230" height="90" rx="10" fill="#f8fafc" stroke="#334155" stroke-width="2"/>
+  <text x="1455" y="98" text-anchor="middle" font-size="14.5" font-weight="700" fill="#0f172a">Dashboard</text>
+  <text x="1455" y="116" text-anchor="middle" font-size="14.5" font-weight="700" fill="#0f172a">(Next.js)</text>
+  <text x="1455" y="136" text-anchor="middle" font-size="11.5" fill="#334155">REST snapshot +</text>
+  <text x="1455" y="150" text-anchor="middle" font-size="11.5" fill="#334155">live WebSocket updates</text>
+
+  <!-- top row arrows -->
+  <line x1="270" y1="115" x2="298" y2="115" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="530" y1="115" x2="558" y2="115" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="790" y1="115" x2="818" y2="115" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1050" y1="115" x2="1078" y2="115" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1310" y1="115" x2="1338" y2="115" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- voice loop A <-> B -->
+  <line x1="298" y1="135" x2="272" y2="135" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="285" y="185" text-anchor="middle" font-size="11" fill="#1e3a8a">mic / speaker</text>
+
+  <!-- ================= Connector: Incident State -> Decision ================= -->
+  <path d="M 935 160 L 935 220 L 380 220 L 380 428" fill="none" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+  <text x="660" y="212" text-anchor="middle" font-size="12" fill="#b45309">a Decision proposes an Action</text>
+
+  <!-- ================= Action row (human-controlled path) ================= -->
+  <rect x="275" y="430" width="210" height="90" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="380" y="465" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Decision</text>
+  <text x="380" y="486" text-anchor="middle" font-size="11.5" fill="#334155">e.g. "roll back</text>
+  <text x="380" y="500" text-anchor="middle" font-size="11.5" fill="#334155">the payment service"</text>
+
+  <rect x="510" y="430" width="210" height="90" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="615" y="465" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Prepare</text>
+  <text x="615" y="486" text-anchor="middle" font-size="11.5" fill="#334155">validate against the</text>
+  <text x="615" y="500" text-anchor="middle" font-size="11.5" fill="#334155">action allowlist</text>
+
+  <rect x="745" y="430" width="210" height="90" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="850" y="465" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Human</text>
+  <text x="850" y="484" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Confirmation</text>
+  <text x="850" y="503" text-anchor="middle" font-size="11.5" fill="#334155">explicit, required</text>
+
+  <rect x="980" y="430" width="210" height="90" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="1085" y="465" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Allowlisted Tool</text>
+  <text x="1085" y="486" text-anchor="middle" font-size="11.5" fill="#334155">sandboxed adapter</text>
+  <text x="1085" y="500" text-anchor="middle" font-size="11.5" fill="#334155">executes</text>
+
+  <rect x="1215" y="430" width="210" height="90" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="1320" y="465" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Execution</text>
+  <text x="1320" y="484" text-anchor="middle" font-size="14.5" font-weight="700" fill="#92400e">Result</text>
+  <text x="1320" y="503" text-anchor="middle" font-size="11.5" fill="#334155">success / failure</text>
+
+  <!-- action row arrows -->
+  <line x1="485" y1="475" x2="508" y2="475" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+  <line x1="720" y1="475" x2="743" y2="475" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+  <line x1="955" y1="475" x2="978" y2="475" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+  <line x1="1190" y1="475" x2="1213" y2="475" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+
+  <!-- ================= Connector: Execution Result -> Incident State ================= -->
+  <path d="M 1320 520 L 1320 650 L 1620 650 L 1620 115 L 1052 115" fill="none" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+  <text x="1620" y="400" text-anchor="middle" font-size="12" fill="#b45309" transform="rotate(90 1620 400)">result written back to Incident State</text>
+
+  <!-- ================= Legend ================= -->
+  <g>
+    <rect x="40" y="800" width="1620" height="80" rx="10" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+    <text x="60" y="826" font-size="13" font-weight="700" fill="#0f172a">Legend</text>
+
+    <rect x="60" y="838" width="16" height="16" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+    <text x="84" y="851" font-size="12.5" fill="#334155">Real-time voice (Agora)</text>
+
+    <rect x="290" y="838" width="16" height="16" rx="3" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+    <text x="314" y="851" font-size="12.5" fill="#334155">Incident intelligence &amp; state</text>
+
+    <rect x="560" y="838" width="16" height="16" rx="3" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+    <text x="584" y="851" font-size="12.5" fill="#334155">Coordination intelligence</text>
+
+    <rect x="820" y="838" width="16" height="16" rx="3" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+    <text x="844" y="851" font-size="12.5" fill="#334155">Human-gated action path</text>
+
+    <rect x="1080" y="838" width="16" height="16" rx="3" fill="#f8fafc" stroke="#334155" stroke-width="2"/>
+    <text x="1104" y="851" font-size="12.5" fill="#334155">Dashboard (REST + WebSocket)</text>
+
+    <line x1="1320" y1="846" x2="1360" y2="846" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <text x="1368" y="851" font-size="12.5" fill="#334155">Proactive voice intervention</text>
+  </g>
+</svg>

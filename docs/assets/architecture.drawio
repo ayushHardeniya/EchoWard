@@ -1,0 +1,84 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="EchoWard Architecture" id="echoward-architecture">
+    <mxGraphModel dx="1700" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Top row: main flow -->
+        <mxCell id="participants" value="Incident Participants&#10;humans on the call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="agora" value="Agora Conversational AI Agent&#10;RTC room + managed ASR/LLM/TTS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="300" y="70" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="intelligence" value="EchoWard Intelligence&#10;conversation turn -&gt; Gemini structured extraction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="560" y="70" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="state" value="Incident State (SQLite)&#10;facts, hypotheses, decisions, actions, timeline, conflicts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#059669;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="820" y="70" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="coordination" value="Coordination Intelligence&#10;conflicts, gaps, ownership, staleness, summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#7C3AED;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="70" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dashboard" value="Dashboard (Next.js)&#10;REST snapshot + live WebSocket updates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#334155;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="70" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#475569;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="participants" target="agora"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#475569;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="agora" target="intelligence"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#475569;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="intelligence" target="state"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#475569;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="state" target="coordination"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#475569;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="coordination" target="dashboard"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- proactive voice loop -->
+        <mxCell id="voiceloop" value="proactive voice: coordination finding -&gt; Agora /speak -&gt; incident room" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#7C3AED;strokeWidth=2;dashed=1;endArrow=block;curved=1;fontColor=#7C3AED;fontSize=11;" edge="1" parent="1" source="coordination" target="agora">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1195" y="-20" />
+              <mxPoint x="415" y="-20" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Action path row -->
+        <mxCell id="decision" value="Decision&#10;e.g. &quot;roll back the payment service&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#B45309;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="275" y="430" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="prepare" value="Prepare&#10;validate against the action allowlist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#B45309;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="510" y="430" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="confirm" value="Human Confirmation&#10;explicit, required" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#B45309;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="745" y="430" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="tool" value="Allowlisted Tool&#10;sandboxed adapter executes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#B45309;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="980" y="430" width="210" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="result" value="Execution Result&#10;success / failure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#B45309;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1215" y="430" width="210" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a1" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#B45309;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="decision" target="prepare"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a2" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#B45309;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="prepare" target="confirm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a3" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#B45309;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="confirm" target="tool"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="a4" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#B45309;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="tool" target="result"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="toDecision" value="a Decision proposes an Action" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#B45309;strokeWidth=2;endArrow=block;fontColor=#B45309;fontSize=11;" edge="1" parent="1" source="state" target="decision"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="toState" value="result written back to Incident State" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#B45309;strokeWidth=2;endArrow=block;fontColor=#B45309;fontSize=11;" edge="1" parent="1" source="result" target="state">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1620" y="650" />
+              <mxPoint x="1620" y="115" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
