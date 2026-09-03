@@ -1,16 +1,21 @@
-# EchoWard
+<div align="center">
+<img src="docs/assets/echoward-logo-cropped.png" height="200px">
+<p><b>Voice-native AI Incident Commander</b> </p>
 
-**Voice-native AI Incident Commander** — built for the EchoSphere: Agora Conversational AI
-Hackathon 2026 (PS41).
+Built for the [EchoSphere](https://www.commudle.com/communities/knotic/hackathons/echosphere/): Agora Conversational AI (PS41).
 
 **Live Demo:** https://echo-ward.vercel.app/
 
-[Architecture](ARCHITECTURE.md) · [Problem Statement](docs/PROBLEM_STATEMENT.md) ·
-[Agora Integration](docs/AGORA.md) · [Demo Runbook](docs/DEMO.md)
+[![Architecture](https://img.shields.io/badge/Architecture-6366f1?style=flat-square)](ARCHITECTURE.md)
+[![Problem Statement](https://img.shields.io/badge/Problem%20Statement-ec4899?style=flat-square)](docs/PROBLEM_STATEMENT.md)
+[![Agora Integration](https://img.shields.io/badge/Agora%20Integration-06b6d4?style=flat-square)](docs/AGORA.md)
+[![Demo Runbook](https://img.shields.io/badge/Demo%20Runbook-f59e0b?style=flat-square)](docs/DEMO.md)
+
+</div>
 
 ## What is EchoWard?
 
-EchoWard joins a live technical incident room as an AI operational teammate. It listens to the
+EchoWard joins a live technical incident room as an **AI operational teammate**. It listens to the
 conversation happening on the call, continuously maintains a shared incident state — facts,
 hypotheses, decisions, actions, owners, and a timeline — and surfaces conflicts and missing
 information instead of guessing at root cause. On top of that shared picture, a coordination layer
@@ -49,7 +54,8 @@ for the full requirement-to-implementation mapping.
 
 ![EchoWard Architecture](docs/assets/product-architecture.png)
 
-To read in detail checkout [ARCHITECTURE.md](ARCHITECTURE.md)
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, including the coordination
+layer and the human-controlled action path.
 
 ## Core workflow
 
@@ -110,13 +116,6 @@ The Agora voice layer and EchoWard's own intelligence layer (Gemini-backed struc
 and coordination reasoning) are intentionally separate integrations with distinct responsibilities.
 Full detail in [docs/AGORA.md](docs/AGORA.md).
 
-## Architecture
-
-![EchoWard Architecture](docs/assets/architecture.svg)
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, including the coordination
-layer and the human-controlled action path.
-
 ## Safety
 
 Operational actions follow an explicit **Prepare → Confirm → Execute** lifecycle. A proposed action
@@ -135,16 +134,16 @@ spoken lines and expected dashboard state at each step: [docs/DEMO.md](docs/DEMO
 
 ## Tech stack
 
-- **Frontend:** Next.js 16 (App Router) + React 19 + TypeScript, Tailwind CSS v4
-- **Backend:** Python 3.12 + FastAPI, run with Uvicorn
-- **Voice/RTC:** Agora RTC Web SDK NG + Agora Conversational AI Engine (managed ASR/LLM/TTS) +
-  Agora RTM SDK (live transcript signaling)
-- **Incident intelligence:** Gemini (`google-genai`, structured JSON output)
-- **State/database:** SQLite (stdlib `sqlite3`, no ORM)
-- **Validation/schema:** Pydantic v2 (`pydantic-settings` for config)
-- **Realtime dashboard:** FastAPI WebSocket, in-process fanout
-- **Testing:** pytest (backend, 163 tests); frontend via `tsc --noEmit` + ESLint + a Vitest unit
-  suite for transcript parsing
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 16 (App Router) + React 19 + TypeScript, Tailwind CSS v4 |
+| Backend | Python 3.12 + FastAPI, run with Uvicorn |
+| Voice/RTC | Agora RTC Web SDK NG + Agora Conversational AI Engine (managed ASR/LLM/TTS) + Agora RTM SDK (live transcript signaling) |
+| Incident intelligence | Gemini (`google-genai`, structured JSON output) |
+| State/database | SQLite (stdlib `sqlite3`, no ORM) |
+| Validation/schema | Pydantic v2 (`pydantic-settings` for config) |
+| Realtime dashboard | FastAPI WebSocket, in-process fanout |
+| Testing | pytest (backend, 163 tests); frontend via `tsc --noEmit` + ESLint + a Vitest unit suite for transcript parsing |
 
 ## Run locally
 
