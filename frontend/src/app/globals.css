@@ -12,6 +12,13 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Slightly larger base scale app-wide (rem-based Tailwind spacing/typography
+   scales with this) so the app reads closer to a modest zoomed-in density
+   without using the CSS `zoom` property. */
+html {
+  font-size: 17px;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

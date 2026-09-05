@@ -235,14 +235,14 @@ export default function IncidentDashboard({
   const voiceJoined = room.channel !== null;
 
   return (
-    <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+    <section className="flex flex-col gap-6 rounded-lg border border-zinc-200 bg-white p-6 sm:p-8 dark:border-zinc-800 dark:bg-zinc-900">
       {/* Header: incident identity + live/EchoWard/status state */}
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 pb-5 dark:border-zinc-800">
         <div>
           <p className="text-xs font-semibold tracking-wide text-zinc-400 dark:text-zinc-500">
             ECHOWARD · AI INCIDENT COMMANDER
           </p>
-          <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">{incident.title}</h2>
+          <h2 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">{incident.title}</h2>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               <span className={`h-1.5 w-1.5 rounded-full ${streamStyle.dot}`} />
@@ -280,13 +280,13 @@ export default function IncidentDashboard({
       </div>
 
       {(error || statusError || liveTranscriptError) && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
           {error ?? statusError ?? liveTranscriptError}
         </div>
       )}
 
       {/* Voice room: who's on the call and the mic/EchoWard controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800/40">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-zinc-50 px-3.5 py-2.5 text-sm dark:bg-zinc-800/40">
         <div>
           {voiceJoined ? (
             <ParticipantsSummary room={room} displayName={displayName} />
@@ -331,12 +331,12 @@ export default function IncidentDashboard({
       <CoordinationPanel findings={state.coordination_findings} />
 
       {/* Facts / Hypotheses */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <Panel title="Facts" badge="CONFIRMED" badgeClass="bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
           {state.facts.length === 0 && <Empty text="No confirmed facts yet." />}
           <ul className="flex flex-col gap-2">
             {state.facts.map((f: Fact) => (
-              <li key={f.id} className="rounded-md bg-blue-50 px-3 py-2 text-sm dark:bg-blue-950/40">
+              <li key={f.id} className="rounded-md bg-blue-50 px-3.5 py-2.5 text-sm dark:bg-blue-950/40">
                 <p className="text-zinc-900 dark:text-zinc-100">{f.statement}</p>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   {f.source} · {formatClock(f.timestamp)}
@@ -354,7 +354,7 @@ export default function IncidentDashboard({
           {state.hypotheses.length === 0 && <Empty text="No hypotheses proposed yet." />}
           <ul className="flex flex-col gap-2">
             {state.hypotheses.map((h: Hypothesis) => (
-              <li key={h.id} className="rounded-md bg-violet-50 px-3 py-2 text-sm dark:bg-violet-950/40">
+              <li key={h.id} className="rounded-md bg-violet-50 px-3.5 py-2.5 text-sm dark:bg-violet-950/40">
                 <p className="text-zinc-900 dark:text-zinc-100">{h.statement}</p>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   possible explanation — not confirmed · {h.source} · {formatClock(h.timestamp)}
@@ -376,7 +376,7 @@ export default function IncidentDashboard({
       </Panel>
 
       {/* Actions / Decisions */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <Panel title="Actions">
           {state.actions.length === 0 && <Empty text="No action items yet." />}
           <ul className="flex flex-col gap-2">
@@ -390,7 +390,7 @@ export default function IncidentDashboard({
           {state.decisions.length === 0 && <Empty text="No decisions recorded yet." />}
           <ul className="flex flex-col gap-2">
             {state.decisions.map((d: Decision) => (
-              <li key={d.id} className="rounded-md bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800/60">
+              <li key={d.id} className="rounded-md bg-zinc-50 px-3.5 py-2.5 text-sm dark:bg-zinc-800/60">
                 <p className="text-zinc-900 dark:text-zinc-100">{d.decision}</p>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   {d.decided_by ?? "unattributed"} · {formatClock(d.timestamp)}
@@ -498,7 +498,7 @@ function VoiceInterventionBanner({ intervention }: { intervention: VoiceInterven
   if (!isWithin(intervention.spoken_at, VOICE_INTERVENTION_RECENCY_MS)) return null;
 
   return (
-    <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm dark:border-indigo-900 dark:bg-indigo-950/40">
+    <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3.5 py-2.5 text-sm dark:border-indigo-900 dark:bg-indigo-950/40">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500 dark:text-indigo-400">
         EchoWard · Just spoke{" "}
         <span className="font-normal normal-case text-indigo-400 dark:text-indigo-500">
@@ -593,7 +593,7 @@ function ConflictRow({ incidentId, conflict }: { incidentId: string; conflict: C
   }
 
   return (
-    <li className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm dark:border-red-900 dark:bg-red-950/40">
+    <li className="rounded-md border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm dark:border-red-900 dark:bg-red-950/40">
       <div className="flex items-center justify-between gap-2">
         <p className="font-medium text-red-900 dark:text-red-200">{conflict.topic}</p>
         <span className="shrink-0 text-xs font-semibold uppercase text-red-700 dark:text-red-400">
@@ -676,7 +676,7 @@ function ActionRow({ incidentId, action }: { incidentId: string; action: Action 
   const terminal = action.status === "completed" || action.status === "failed";
 
   return (
-    <li className="rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+    <li className="rounded-md border border-zinc-200 px-3.5 py-2.5 text-sm dark:border-zinc-800">
       <p className="text-zinc-900 dark:text-zinc-100">{action.description}</p>
       <div className="mt-1 flex items-center justify-between text-xs">
         <span className={action.owner ? "text-zinc-600 dark:text-zinc-300" : "italic text-zinc-400"}>
@@ -760,8 +760,8 @@ function Panel({
 }) {
   return (
     <div>
-      <div className="mb-2 flex items-center gap-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{title}</h3>
+      <div className="mb-3 flex items-center gap-2">
+        <h3 className="text-base font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{title}</h3>
         {badge && (
           <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${badgeClass}`}>{badge}</span>
         )}

@@ -180,7 +180,7 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-6 py-10">
+    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-8 px-6 py-10">
       <header>
         <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">EchoWard</h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">Voice-native AI Incident Commander</p>
@@ -331,7 +331,7 @@ function LandingScreen({
             priority
           />
           <div className="flex flex-col gap-3">
-            <h1 className="text-3xl font-semibold tracking-tight text-balance text-zinc-900 dark:text-zinc-50 sm:text-4xl">
+            <h1 className="text-4xl font-semibold tracking-tight text-balance text-zinc-900 dark:text-zinc-50 sm:text-5xl">
               Voice-native AI Incident Commander
             </h1>
             <p className="max-w-xl text-base leading-relaxed text-zinc-600 dark:text-zinc-400">
@@ -462,7 +462,7 @@ function StartIncidentCard({
         <span className="text-[11px] font-semibold tracking-wide text-zinc-400 dark:text-zinc-500">
           GET STARTED
         </span>
-        <h2 className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">Start an incident</h2>
+        <h2 className="mt-1 text-xl font-semibold text-zinc-900 dark:text-zinc-50">Start an incident</h2>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
           EchoWard joins the call, listens, and keeps a shared incident picture live for the team.
         </p>
