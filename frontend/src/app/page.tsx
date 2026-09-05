@@ -1,13 +1,62 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import IncidentDashboard from "@/components/IncidentDashboard";
+import { API_URL, fetchHealth } from "@/lib/api";
 import { createIncident } from "@/lib/incidents-api";
 import { clearLastIncidentId, persistLastIncidentId, useLastIncidentId } from "@/lib/incidentSession";
 import { useAgoraRoom } from "@/lib/useAgoraRoom";
 
 const DEFAULT_NAME = "Responder";
+
+// Render's free tier suspends an idle backend; the next request wakes it, but the
+// cold start can take about a minute. /health is safe to retry (unlike POST
+// /api/incidents, which must never fire more than once per click).
+const HEALTH_CHECK_TIMEOUT_MS = 6_000;
+const WAKE_RETRY_SECONDS = 8;
+const WAKE_TIMEOUT_MS = 80_000;
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+async function pingHealth(): Promise<boolean> {
+  try {
+    await fetchHealth(AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Small ambient "API · Online/Waking" indicator - independent of the Start
+ * Incident flow's own (fresh, on-click) health gate below. */
+function useApiStatus(): "online" | "waking" {
+  const [online, setOnline] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function check() {
+      const healthy = await pingHealth();
+      if (cancelled) return;
+      setOnline(healthy);
+      if (!healthy) {
+        timer = setTimeout(check, WAKE_RETRY_SECONDS * 1000);
+      }
+    }
+
+    check();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  return online ? "online" : "waking";
+}
 
 export default function Home() {
   const room = useAgoraRoom();
@@ -21,11 +70,50 @@ export default function Home() {
   const [starting, setStarting] = useState(false);
   const [joining, setJoining] = useState(false);
   const [flowError, setFlowError] = useState<string | null>(null);
+  const [wakeState, setWakeState] = useState<"idle" | "waking" | "timeout">("idle");
+  const [retryIn, setRetryIn] = useState(WAKE_RETRY_SECONDS);
+
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+
+  async function waitForBackendWake(): Promise<boolean> {
+    setWakeState("waking");
+    const deadline = Date.now() + WAKE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      for (let s = WAKE_RETRY_SECONDS; s > 0; s--) {
+        setRetryIn(s);
+        await delay(1000);
+        if (!mountedRef.current) return false;
+      }
+      if (await pingHealth()) return true;
+    }
+    return false;
+  }
 
   async function handleStart(title: string, name: string) {
     setFlowError(null);
+    setWakeState("idle");
     setStarting(true);
     setDisplayName(name);
+
+    // /health is safe to retry - unlike the create-incident call below, which
+    // must only ever fire once per click to avoid creating duplicate incidents.
+    if (!(await pingHealth())) {
+      const awake = await waitForBackendWake();
+      if (!mountedRef.current) return;
+      if (!awake) {
+        setWakeState("timeout");
+        setStarting(false);
+        return;
+      }
+      setWakeState("idle");
+    }
+
     try {
       const incident = await createIncident(title);
       persistLastIncidentId(incident.id);
@@ -84,6 +172,8 @@ export default function Home() {
           starting={starting}
           joining={joining}
           error={flowError ?? room.error}
+          wakeState={wakeState}
+          retryIn={retryIn}
         />
       </main>
     );
@@ -164,13 +254,19 @@ function LandingScreen({
   starting,
   joining,
   error,
+  wakeState,
+  retryIn,
 }: {
   onStart: (title: string, name: string) => void;
   onJoinExisting: (code: string, name: string, withVoice: boolean) => void;
   starting: boolean;
   joining: boolean;
   error: string | null;
+  wakeState: "idle" | "waking" | "timeout";
+  retryIn: number;
 }) {
+  const apiStatus = useApiStatus();
+
   return (
     <>
       <section className="grid items-start gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:gap-12">
@@ -200,6 +296,8 @@ function LandingScreen({
           starting={starting}
           joining={joining}
           error={error}
+          wakeState={wakeState}
+          retryIn={retryIn}
         />
       </section>
 
@@ -246,11 +344,30 @@ function LandingScreen({
           </p>
         </div>
 
-        <span className="text-sm font-semibold tracking-wide text-zinc-700 dark:text-zinc-300">
-          Built by Team ZenYukti
-        </span>
+        <div className="flex flex-col items-start gap-1.5 sm:items-end">
+          <span className="text-sm font-semibold tracking-wide text-zinc-700 dark:text-zinc-300">
+            Built by Team ZenYukti
+          </span>
+          <ApiStatusBadge status={apiStatus} />
+        </div>
       </section>
     </>
+  );
+}
+
+function ApiStatusBadge({ status }: { status: "online" | "waking" }) {
+  return (
+    <a
+      href={`${API_URL}/health`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${status === "online" ? "bg-emerald-500" : "animate-pulse bg-amber-500"}`}
+      />
+      API · {status === "online" ? "Online" : "Waking"}
+    </a>
   );
 }
 
@@ -260,12 +377,16 @@ function StartIncidentCard({
   starting,
   joining,
   error,
+  wakeState,
+  retryIn,
 }: {
   onStart: (title: string, name: string) => void;
   onJoinExisting: (code: string, name: string, withVoice: boolean) => void;
   starting: boolean;
   joining: boolean;
   error: string | null;
+  wakeState: "idle" | "waking" | "timeout";
+  retryIn: number;
 }) {
   const [title, setTitle] = useState("");
   const [name, setName] = useState(DEFAULT_NAME);
@@ -296,7 +417,35 @@ function StartIncidentCard({
         </p>
       </div>
 
-      {error && (
+      {wakeState === "waking" && (
+        <div className="flex items-start gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-950">
+          <span className="mt-1 h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-500" />
+          <div className="flex flex-col gap-0.5">
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-200">Backend is waking up</p>
+            <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+              EchoWard&apos;s backend is starting. This can take about a minute on the free deployment.
+            </p>
+            <p className="text-[11px] text-zinc-400 dark:text-zinc-500">Checking again in {retryIn}s…</p>
+          </div>
+        </div>
+      )}
+
+      {wakeState === "timeout" && (
+        <div className="flex flex-col gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2.5 dark:border-red-900 dark:bg-red-950">
+          <p className="text-sm text-red-700 dark:text-red-300">
+            The backend is taking longer than expected to wake up.
+          </p>
+          <button
+            type="button"
+            onClick={() => onStart(title.trim(), name.trim() || DEFAULT_NAME)}
+            className="self-start rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 dark:border-red-800 dark:text-red-300"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {wakeState === "idle" && error && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
         </div>

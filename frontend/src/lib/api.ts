@@ -7,8 +7,8 @@ export interface HealthResponse {
   database_connected: boolean;
 }
 
-export async function fetchHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${API_URL}/health`);
+export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {
+  const res = await fetch(`${API_URL}/health`, { signal });
   if (!res.ok) {
     throw new Error(`Health check failed with status ${res.status}`);
   }
